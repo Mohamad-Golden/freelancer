@@ -18,8 +18,8 @@ from pydantic import BaseModel
 
 class Auth:
     def __init__(self, user: User, session: Session) -> None:
-        session = session
-        user = user
+        self.session = session
+        self.user = user
 
 
 def get_session() -> Session:
@@ -48,7 +48,7 @@ def get_user(
     if user_id:
         user = session.get(User, user_id)
     elif email:
-        user = session.exec(select(User).where(User.email == email))
+        user = session.exec(select(User).where(User.email == email)).first()
     if user is None:
         if not fail_silently:
             raise not_found_exception
@@ -56,19 +56,19 @@ def get_user(
 
 
 def authenticate_user(
-    session: Session = Depends(get_session), token: str = Cookie(default=None)
+    session: Session = Depends(get_session), access_token: str = Cookie(default=None)
 ) -> Auth:
-    if token is None:
+    if access_token is None:
         raise credentials_exception
-    try:
-        payload = jwt.decode(token, settings.SESSION_KEY, algorithms=["HS256"])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
-    except JWTError:
+    # try:
+    payload = jwt.decode(access_token, settings.SESSION_KEY, algorithms="HS256")
+    user_id = payload.get("sub")
+    if user_id is None:
         raise credentials_exception
+    # except JWTError:
+    #     raise credentials_exception
 
-    return Auth(get_user(session, user_id), session)
+    return Auth(get_user(session, int(user_id)), session)
 
 
 def authenticate_admin(auth: Auth = Depends(authenticate_user)):
@@ -77,12 +77,11 @@ def authenticate_admin(auth: Auth = Depends(authenticate_user)):
     raise credentials_exception
 
 
-def validate_user(session: Session, user_id: int, password: str) -> User:
-    user = get_user(session, user_id, fail_silently=True)
+def validate_user(session: Session, email: str, password: str) -> User:
+    user = get_user(session, email=email, fail_silently=True)
     if user:
-        user.password
-    hashed_password = md5(password.encode())
-    if compare_digest(user.hashed_password, hashed_password):
-        return user
-    else:
-        raise credentials_exception
+        hashed_password = md5(password.encode()).hexdigest()
+        if compare_digest(user.hashed_password, hashed_password):
+            return user
+    raise credentials_exception
+        
