@@ -60,13 +60,13 @@ def authenticate_user(
 ) -> Auth:
     if access_token is None:
         raise credentials_exception
-    # try:
-    payload = jwt.decode(access_token, settings.SESSION_KEY, algorithms="HS256")
-    user_id = payload.get("sub")
-    if user_id is None:
+    try:
+        payload = jwt.decode(access_token, settings.SESSION_KEY, algorithms="HS256")
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
         raise credentials_exception
-    # except JWTError:
-    #     raise credentials_exception
 
     return Auth(get_user(session, int(user_id)), session)
 
