@@ -21,6 +21,11 @@ from .models import (
     ProjectOut,
     ProjectTechnology,
     UserLogin,
+    Technology,
+    TechnologyCreate,
+    OfferCreate,
+    Offer,
+    PlanChange,
 )
 from .utils import (
     get_session,
@@ -30,10 +35,16 @@ from .utils import (
     authenticate_user,
     authenticate_admin,
     Auth,
+    sendmail,
 )
 from .types import PlanEnum
 from sqlalchemy.exc import IntegrityError
-from .responses import conflict_exception, invalid_data_exception, not_found_exception
+from .responses import (
+    conflict_exception,
+    invalid_data_exception,
+    not_found_exception,
+    credentials_exception,
+)
 
 router = InferringRouter()
 authenticated_router = InferringRouter()
@@ -61,6 +72,7 @@ class Router:
             user.role = role
             self.session.add(user)
             verification_code = UserVerificationCode(user=user)
+            sendmail(user_in.email, verification_code.code)
             self.session.add(verification_code)
             self.session.commit()
             self.session.refresh(user)
@@ -69,46 +81,88 @@ class Router:
             raise conflict_exception
 
     @router.post("/login")
-    def login(self, user: UserLogin):
-        user = validate_user(self.session, user.email, user.password)
-        access_token = create_access_token({"sub": str(user.id)})
-        response = JSONResponse(status_code=200, content={})
-        response.set_cookie("access_token", access_token)
-        return response
+    def login(self, user_in: UserLogin):
+        user = validate_user(self.session, user_in.email, user_in.password)
+        if user.is_verified:
+            access_token = create_access_token({"sub": str(user.id)})
+            response = JSONResponse(status_code=200, content={})
+            response.set_cookie("access_token", access_token)
+            return response
+        else:
+            raise credentials_exception
 
     @router.post("/user/verify")
     def verify_user(self, user_id: int = Body(), code: str = Body()):
-        database_code = self.session(
+        database_code = self.session.exec(
             select(UserVerificationCode).where(
                 UserVerificationCode.code == code,
                 UserVerificationCode.user_id == user_id,
                 UserVerificationCode.expire_at > datetime.utcnow(),
             )
-        )
+        ).first()
         if database_code:
             user = self.session.get(User, user_id)
             user.is_verified = True
+            self.session.delete(database_code)
             self.session.add(user)
             self.session.commit()
+            return JSONResponse(status_code=200, content={})
         else:
             raise invalid_data_exception
 
+    @router.post("/password/forgot")
+    def send_reset_password_token(self, email: EmailStr = Body(embed=True)):
+        user = self.session.exec(select(User).where(User.email == email)).first()
+        if user:
+            past_token = self.session.exec(
+                select(ResetPasswordToken, User).where(
+                    User.email == email, ResetPasswordToken.user_id == User.id
+                )
+            )
+            for token, _ in past_token:
+                self.session.delete(token)
+
+            reset_token = ResetPasswordToken(user=user)
+            sendmail(email, reset_token.token)
+            self.session.add(reset_token)
+            self.session.commit()
+            return JSONResponse(status_code=200, content={})
+        else:
+            raise not_found_exception
+
     @router.post("/password/reset/validate")
-    def validate_reset_token(self, token: str = Body()):
-        database_token = self.session.get(ResetPasswordToken, token)
-        if database_token and database_token.expire_at > datetime.utcnow():
-            JSONResponse(status_code=200, content={"detail": "valid"})
+    def validate_reset_token(self, token: str = Body(), email: EmailStr = Body()):
+        database_token = self.session.exec(
+            select(ResetPasswordToken).where(
+                User.email == email,
+                ResetPasswordToken.token == token,
+                ResetPasswordToken.user_id == User.id,
+                ResetPasswordToken.expire_at > datetime.utcnow(),
+            )
+        ).first()
+        if database_token:
+            return JSONResponse(status_code=200, content={"detail": "valid"})
         else:
             raise invalid_data_exception
 
     @router.post("/password/reset")
-    def reset_password(self, token: str = Body(), password: str = Body()):
-        database_token = self.session.get(ResetPasswordToken, token)
-        if database_token and database_token.expire_at > datetime.utcnow():
-            user = database_token.user
+    def reset_password(
+        self, token: str = Body(), email: EmailStr = Body(), password: str = Body()
+    ):
+        result = self.session.exec(
+            select(ResetPasswordToken, User).where(
+                User.email == email,
+                ResetPasswordToken.token == token,
+                ResetPasswordToken.user_id == User.id,
+                ResetPasswordToken.expire_at > datetime.utcnow(),
+            )
+        )
+        for reset_token, user in result:
             user.hashed_password = md5(password.encode()).hexdigest()
+            self.session.delete(reset_token)
             self.session.add(user)
             self.session.commit()
+            return JSONResponse(status_code=200, content={})
         else:
             raise invalid_data_exception
 
@@ -117,7 +171,7 @@ class Router:
         return self.session.exec(select(Role)).all()
 
     @router.get("/plan", response_model=List[Plan])
-    def list_roles(self):
+    def list_plans(self):
         return self.session.exec(select(Plan)).all()
 
 
@@ -125,10 +179,16 @@ class Router:
 class AuthenticatedRouter:
     auth: Auth = Depends(authenticate_user)
 
-    @authenticated_router.post("/project", response_model=ProjectOut, status_code=201)
+    @authenticated_router.post(
+        "/project",
+        response_model=ProjectOut,
+        status_code=201,
+        response_model_exclude_none=True,
+    )
     def create_project(self, project_in: ProjectIn):
         try:
-            project = Project.from_orm(project_in, update={"owner": self.auth.user})
+            project = Project.from_orm(project_in)
+            project.owner = self.auth.user
             if project_in.technologies_id:
                 for tech_id in project_in.technologies_id:
                     self.auth.session.add(
@@ -139,11 +199,38 @@ class AuthenticatedRouter:
         except IntegrityError:
             raise invalid_data_exception
 
-    @authenticated_router.get("/project", response_model=ProjectOut)
+    @authenticated_router.get(
+        "/project/detail", response_model=ProjectOut, response_model_exclude_none=True
+    )
     def get_project_detail(self, project_id: int):
         project = self.auth.session.get(Project, project_id)
         if project:
             return project
+        else:
+            raise not_found_exception
+
+    @authenticated_router.post("/offer", status_code=201)
+    def create_offer(self, offer_in: OfferCreate):
+        project = self.auth.session.get(Project, offer_in.project_id)
+        if project:
+            offer = Offer.from_orm(offer_in)
+            offer.offerer = self.auth.user
+            self.auth.session.add(offer)
+            self.auth.session.commit()
+            return JSONResponse(status_code=201, content={})
+        else:
+            raise not_found_exception
+
+    @authenticated_router.patch("/plan", response_model=PlanChange)
+    def change_user_plan(self, plan_id: int):
+        if self.auth.user.plan.title != PlanEnum.free:
+            raise invalid_data_exception
+        plan = self.auth.session.get(Plan, plan_id)
+        if plan:
+            self.auth.user.plan = plan
+            self.auth.session.add(self.auth.user)
+            self.auth.session.commit()
+            return plan
         else:
             raise not_found_exception
 
@@ -152,6 +239,12 @@ class AuthenticatedRouter:
 class AuthenticatedRouter:
     auth: Auth = Depends(authenticate_admin)
 
-    @admin_router.post("/b", response_model=UserOut, status_code=201)
-    def b(self, user: UserCreate):
-        return
+    @admin_router.post("/technology", response_model=Technology, status_code=201)
+    def create_technology(self, technology_in: TechnologyCreate):
+        try:
+            technology = Technology.from_orm(technology_in)
+            self.auth.session.add(technology)
+            self.auth.session.commit()
+            return technology
+        except IntegrityError:
+            raise conflict_exception

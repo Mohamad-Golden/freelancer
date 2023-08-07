@@ -56,7 +56,8 @@ def get_user(
 
 
 def authenticate_user(
-    session: Session = Depends(get_session), access_token: str = Cookie(default=None)
+    session: Session = Depends(get_session),
+    access_token: str = Cookie(default=None, include_in_schema=False),
 ) -> Auth:
     if access_token is None:
         raise credentials_exception
@@ -84,4 +85,8 @@ def validate_user(session: Session, email: str, password: str) -> User:
         if compare_digest(user.hashed_password, hashed_password):
             return user
     raise credentials_exception
-        
+
+
+def sendmail(email: str, message: str):
+    with open("mails", "a") as f:
+        f.write(f"{email}: {message}\n")

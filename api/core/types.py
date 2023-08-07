@@ -12,6 +12,7 @@ class RoleEnum(str, Enum):
     freelancer = "freelancer"
     employer = "employer"
 
+    # admin = "admin"
 
 class GeneralRole(str, Enum):
     admin = "admin"

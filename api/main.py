@@ -19,7 +19,7 @@ from .core.router import router
 from .core.router import authenticated_router
 from .core.models import User, Role, Plan
 from .db import get_engine
-
+import hashlib
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -42,6 +42,14 @@ def startup():
         bronze = Plan(title="bronze")
         gold = Plan(title="gold")
         diamond = Plan(title="diamond")
+        user = User(
+            email="user@example.com",
+            hashed_password=hashlib.md5(b"string").hexdigest(),
+            role_id=1,
+            plan_id=3,
+            is_verified=True
+        )
+        session.add(user)
         session.add(free)
         session.add(bronze)
         session.add(gold)
@@ -50,7 +58,7 @@ def startup():
 
 
 def get_application():
-    create_db_and_tables()
+    # create_db_and_tables()
     # startup()
     _app = FastAPI(
         openapi_url=settings.URL_PREFIX + "/openapi.json",

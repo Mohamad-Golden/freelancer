@@ -1,7 +1,9 @@
 from sqlmodel import SQLModel, Field, Relationship, Session
 from pydantic import EmailStr
+from pydantic import root_validator
 from typing import Optional, List
 from .types import RoleEnum, PlanEnum
+
 from datetime import datetime, timedelta
 import string
 import secrets
@@ -40,37 +42,73 @@ class User(UserBase, table=True):
     created_at: datetime = Field(default_factory=datetime.now, nullable=False)
     offers: List["Offer"] = Relationship(back_populates="offerer")
     is_verified: bool = False
+    # projects: List["Project"] = Relationship(
+    #     back_populates="owner",
+    # )
     technologies: List["Technology"] = Relationship(link_model=UserTechnology)
+    reset_token: Optional["ResetPasswordToken"] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}, back_populates="user"
+    )
+    verification_code: Optional["UserVerificationCode"] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}, back_populates="user"
+    )
+    # doing_projects: List["Project"] = Relationship(
+    #     back_populates="doer",
+    # )
 
 
 class UserOut(UserBase):
     id: int
 
 
-class Plan(SQLModel, table=True):
+class PlanChange(SQLModel):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str
-    users: List[User] = Relationship()
+
+
+class Plan(PlanChange, table=True):
+    users: List[User] = Relationship(back_populates="plan")
 
 
 class Role(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str
-    users: List[User] = Relationship()
+    users: List[User] = Relationship(back_populates="role")
 
 
 class ProjectIn(SQLModel):
     title: str
     description: Optional[str] = None
-    price_from: int
-    price_to: int
+    price_from: int = Field(gt=299999)
+    price_to: int = Field(gt=300000)
     technologies_id: List[int] = None
+
+    @root_validator()
+    def validate_price_range(cls, values):
+        if values.get("price_from") < values.get("price_to"):
+            return values
+        else:
+            raise ValueError
+
+
+class OfferCreate(SQLModel):
+    project_id: int
+    offer_price: int = Field(gt=299999)
+    duration_day: int = Field(gt=0)
 
 
 class OfferOut(SQLModel):
     offer_price: int
-    duration_day: int
-    # offerer: UserOut
+    duration_day: int = Field(gt=0)
+    offerer: UserOut
+
+
+class TechnologyCreate(SQLModel):
+    title: str = Field(unique=True)
+
+
+class Technology(TechnologyCreate, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
 
 
 class ProjectBase(SQLModel):
@@ -79,10 +117,6 @@ class ProjectBase(SQLModel):
     description: Optional[str] = None
     price_from: int
     price_to: int
-    owner_id: Optional[int] = Field(default=None, foreign_key="user.id")
-    owner: "User" = Relationship()
-    doer_id: Optional[int] = Field(foreign_key="user.id")
-    doer: Optional["User"] = Relationship()
     created_at: datetime = Field(default_factory=datetime.utcnow)
     expire_at: datetime = Field(
         default_factory=lambda: datetime.utcnow() + timedelta(days=15)
@@ -92,7 +126,8 @@ class ProjectBase(SQLModel):
     deadline_until: Optional[datetime] = None
 
 
-class ProjectOut(SQLModel):
+class ProjectOut(ProjectBase):
+    technologies: List["Technology"] = None
     offers: List[OfferOut] = None
 
 
@@ -106,13 +141,19 @@ class Model2(SQLModel):
 
 
 class Project(ProjectBase, table=True):
-    offers: List["Offer"] = Relationship(back_populates="project")
+    offers: List["Offer"] = Relationship(
+        back_populates="project",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    owner_id: Optional[int] = Field(foreign_key="user.id", nullable=False)
+    owner: Optional["User"] = Relationship(
+        sa_relationship_kwargs=dict(foreign_keys="[Project.owner_id]")
+    )
+    doer_id: Optional[int] = Field(foreign_key="user.id")
+    doer: Optional["User"] = Relationship(
+        sa_relationship_kwargs=dict(foreign_keys="[Project.doer_id]")
+    )
     # technologies: List['Technology'] = Relationship(link_model='ProjectTechnology')
-
-
-class Technology(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    title: str
 
 
 class ProjectTechnology(SQLModel, table=True):
@@ -128,33 +169,31 @@ class ProjectTechnology(SQLModel, table=True):
 
 class UserVerificationCode(SQLModel, table=True):
     code: str = Field(
-        default_factory=lambda: "".join(secrets.choice(string.digits) for _ in range(6)),
+        default_factory=lambda: "".join(
+            secrets.choice(string.digits) for _ in range(6)
+        ),
         primary_key=True,
     )
-    user_id: int = Field(foreign_key="user.id")
-    user: User = Relationship()
+    user_id: Optional[int] = Field(foreign_key="user.id", nullable=False)
+    user: Optional[User] = Relationship(back_populates="verification_code")
     expire_at: datetime = Field(
         default_factory=lambda: datetime.utcnow() + timedelta(minutes=5), nullable=False
     )
 
 
 class ResetPasswordToken(SQLModel, table=True):
-    token: str = Field(default=lambda: secrets.token_hex, primary_key=True)
+    token: str = Field(default_factory=secrets.token_hex, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
-    user: User = Relationship()
+    user: User = Relationship(back_populates="reset_token")
     expire_at: datetime = Field(
-        default_factory=lambda: datetime.utcnow() + timedelta(minutes=5)
+        default_factory=lambda: datetime.utcnow() + timedelta(minutes=5), nullable=False
     )
 
 
 class Offer(SQLModel, table=True):
-    offerer_id: Optional[int] = Field(
-        default=None, foreign_key="user.id", primary_key=True
-    )
+    offerer_id: Optional[int] = Field(foreign_key="user.id", primary_key=True)
     offerer: User = Relationship()
-    project_id: Optional[int] = Field(
-        default=None, foreign_key="project.id", primary_key=True
-    )
+    project_id: Optional[int] = Field(foreign_key="project.id", primary_key=True)
     project: Project = Relationship(back_populates="offers")
     offer_price: int
-    duration_day: int
+    duration_day: int = Field(gt=0)
