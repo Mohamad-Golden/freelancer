@@ -6,7 +6,7 @@ from fastapi import Depends, Body
 from pydantic import Field, EmailStr
 from typing import List
 from hashlib import md5
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .models import (
     UserCreate,
@@ -228,6 +228,16 @@ class AuthenticatedRouter:
         plan = self.auth.session.get(Plan, plan_id)
         if plan:
             self.auth.user.plan = plan
+            match plan.duration_day:
+                case 30:
+                    self.auth.user.plan_expire_at = datetime.utcnow() + timedelta(days=30)
+                case 60:
+                    self.auth.user.plan_expire_at = datetime.utcnow() + timedelta(days=60)
+                case 90:
+                    self.auth.user.plan_expire_at = datetime.utcnow() + timedelta(days=90)
+                case _:
+                    self.auth.user.plan_expire_at = None
+
             self.auth.session.add(self.auth.user)
             self.auth.session.commit()
             return plan

@@ -7,12 +7,12 @@ from ..settings import settings
 from typing import Tuple
 
 from .responses import credentials_exception, not_found_exception
-from .models import User
+from .models import User, Plan
 from sqlmodel import Session, select
 from hashlib import md5
 from secrets import compare_digest
 from ..db import get_engine
-from .types import GeneralRole
+from .types import GeneralRole, PlanEnum
 from pydantic import BaseModel
 
 
@@ -68,8 +68,15 @@ def authenticate_user(
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-
-    return Auth(get_user(session, int(user_id)), session)
+    user = get_user(session, int(user_id))
+    if user.plan_expire_at and user.plan_expire_at < datetime.utcnow():
+        free_plan = session.exec(
+            select(Plan).where(Plan.title == PlanEnum.free)
+        ).first()
+        user.plan = free_plan
+        session.add(user)
+        session.commit()
+    return Auth(user, session)
 
 
 def authenticate_admin(auth: Auth = Depends(authenticate_user)):

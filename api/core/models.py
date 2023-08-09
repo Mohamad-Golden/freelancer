@@ -36,6 +36,7 @@ class User(UserBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     plan_id: Optional[int] = Field(default=None, foreign_key="plan.id")
     plan: Optional["Plan"] = Relationship()
+    plan_expire_at: Optional[datetime] = None
     hashed_password: str = Field(default=None, max_length=32)
     role_id: Optional[int] = Field(foreign_key="role.id")
     role: Optional["Role"] = Relationship()
@@ -68,7 +69,7 @@ class PlanChange(SQLModel):
 
 class Plan(PlanChange, table=True):
     users: List[User] = Relationship(back_populates="plan")
-
+    duration_day: int
 
 class Role(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -129,16 +130,6 @@ class ProjectBase(SQLModel):
 class ProjectOut(ProjectBase):
     technologies: List["Technology"] = None
     offers: List[OfferOut] = None
-
-
-class Model(SQLModel):
-    a: str
-
-
-class Model2(SQLModel):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    b: List[Model]
-
 
 class Project(ProjectBase, table=True):
     offers: List["Offer"] = Relationship(
