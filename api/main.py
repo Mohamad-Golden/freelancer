@@ -39,15 +39,15 @@ def startup():
         session.add(freelancer)
         session.add(employer)
         free = Plan(title="free")
-        bronze = Plan(title="bronze")
-        gold = Plan(title="gold")
-        diamond = Plan(title="diamond")
+        bronze = Plan(title="bronze", duration_day=30)
+        gold = Plan(title="gold", duration_day=60)
+        diamond = Plan(title="diamond", duration_day=90)
         user = User(
             email="user@example.com",
             hashed_password=hashlib.md5(b"string").hexdigest(),
             role_id=1,
-            plan_id=3,
-            is_verified=True
+            plan_id=1,
+            is_verified=True,
         )
         session.add(user)
         session.add(free)

@@ -32,8 +32,14 @@ class UserTechnology(SQLModel, table=True):
     # user: User = Relationship()
 
 
+class UserShortOut(UserBase):
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+
 class User(UserBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+    star: Optional[int] = Field(default=0, nullable=False, gt=-1, lt=6)
+    description: Optional[str] = None
     plan_id: Optional[int] = Field(default=None, foreign_key="plan.id")
     plan: Optional["Plan"] = Relationship()
     plan_expire_at: Optional[datetime] = None
@@ -56,10 +62,128 @@ class User(UserBase, table=True):
     # doing_projects: List["Project"] = Relationship(
     #     back_populates="doer",
     # )
+    comments: List["Comment"] = Relationship(
+        back_populates="user_from",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+
+class SampleProjectOut(SQLModel):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    title: str
+    description: Optional[str] = None
+    link: Optional[str] = None
+
+
+class SampleProject(SampleProjectOut, table=True):
+    user_id: Optional[int] = Field(nullable=False)
+    user: User = Relationship()
+
+
+class EducationOut(SQLModel):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    institution_name: str
+    major: str
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    in_progress: Optional[bool] = False
+
+    @root_validator
+    def validate_in_progress(cls, values):
+        if values.get("finished_at") is None:
+            values["in_progress"] = True
+            return values
+        else:
+            if values.get("in_progress"):
+                values["finished_at"] = None
+            return values
+
+
+class Education(EducationOut, table=True):
+    user_id: Optional[int] = Field(nullable=False)
+    user: User = Relationship()
+
+
+class CommentOut(SQLModel):
+    star: Optional[int] = Field(default=0, gt=-1, lt=6)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    from_user: UserShortOut
+    message: str
+
+
+class CommentIn(SQLModel):
+    star: Optional[int] = Field(default=0, nullable=False, gt=-1, lt=6)
+    to_user_id: int
+    to_project_id: int
+    message: str
+
+
+class Comment(SQLModel, table=True):
+    star: Optional[int] = Field(default=0, nullable=False, gt=-1, lt=6)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    project_id: Optional[int] = Field(nullable=False, primary_key=True)
+    project: "Project" = Relationship()
+    from_user_id: Optional[int] = Field(nullable=False, primary_key=True)
+    to_user_id: Optional[int] = Field(nullable=False)
+    from_user: "User" = Relationship(
+        sa_relationship_kwargs=dict(foreign_keys="[Comment.from_user_id]"),
+    )
+    to_user: "User" = Relationship(
+        back_populates="comments",
+        sa_relationship_kwargs=dict(foreign_keys="[Comment.to_user_id]"),
+    )
+    message: str
+
+
+class ExperienceOut(SQLModel):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    company_name: str
+    in_progress: Optional[bool] = False
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    position: str
+
+    @root_validator
+    def validate_in_progress(cls, values):
+        if values.get("finished_at") is None:
+            values["in_progress"] = True
+            return values
+        else:
+            if values.get("in_progress"):
+                values["finished_at"] = None
+            return values
+
+
+class Experience(ExperienceOut, table=True):
+    user_id: Optional[int] = Field(nullable=False)
+    user: User = Relationship()
+
+
+class TechnologyCreate(SQLModel):
+    title: str = Field(unique=True)
+
+
+class Technology(TechnologyCreate, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
 
 
 class UserOut(UserBase):
     id: int
+    description: Optional[str] = None
+    educations: List[EducationOut] = None
+    experiences: List[ExperienceOut] = None
+    sample_projects: List[SampleProjectOut] = None
+    comments: List[CommentOut] = None
+    technologies: List[Technology] = None
+    star: Optional[int] = Field(default=0, nullable=False, gt=-1, lt=6)
+
+
+class UserUpdate(SQLModel):
+    description: Optional[str] = None
+    educations: List[EducationOut] = None
+    experiences: List[ExperienceOut] = None
+    sample_projects: List[SampleProjectOut] = None
+    technologies_id: List[int] = None
 
 
 class PlanChange(SQLModel):
@@ -69,7 +193,8 @@ class PlanChange(SQLModel):
 
 class Plan(PlanChange, table=True):
     users: List[User] = Relationship(back_populates="plan")
-    duration_day: int
+    duration_day: Optional[int] = None
+
 
 class Role(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -95,21 +220,13 @@ class ProjectIn(SQLModel):
 class OfferCreate(SQLModel):
     project_id: int
     offer_price: int = Field(gt=299999)
-    duration_day: int = Field(gt=0)
+    duration_day: int = Field(gt=-1)
 
 
 class OfferOut(SQLModel):
     offer_price: int
-    duration_day: int = Field(gt=0)
+    duration_day: int = Field(gt=-1)
     offerer: UserOut
-
-
-class TechnologyCreate(SQLModel):
-    title: str = Field(unique=True)
-
-
-class Technology(TechnologyCreate, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
 
 
 class ProjectBase(SQLModel):
@@ -127,9 +244,14 @@ class ProjectBase(SQLModel):
     deadline_until: Optional[datetime] = None
 
 
+class ProjectList(ProjectBase):
+    pass
+
+
 class ProjectOut(ProjectBase):
     technologies: List["Technology"] = None
     offers: List[OfferOut] = None
+
 
 class Project(ProjectBase, table=True):
     offers: List["Offer"] = Relationship(
@@ -187,4 +309,4 @@ class Offer(SQLModel, table=True):
     project_id: Optional[int] = Field(foreign_key="project.id", primary_key=True)
     project: Project = Relationship(back_populates="offers")
     offer_price: int
-    duration_day: int = Field(gt=0)
+    duration_day: int = Field(gt=-1)
