@@ -25,11 +25,11 @@ class UserTechnology(SQLModel, table=True):
     technology_id: Optional[int] = Field(
         default=None, foreign_key="technology.id", primary_key=True
     )
-    # technology: Technology = Relationship()
+    technology: "Technology" = Relationship()
     user_id: Optional[int] = Field(
         default=None, foreign_key="user.id", primary_key=True
     )
-    # user: User = Relationship()
+    user: "User" = Relationship()
 
 
 class UserShortOut(UserBase):
@@ -38,8 +38,8 @@ class UserShortOut(UserBase):
 
 class User(UserBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    star: Optional[int] = Field(default=0, nullable=False, gt=-1, lt=6)
     description: Optional[str] = None
+    offer_left: int = Field(default=0, gt=-1)
     plan_id: Optional[int] = Field(default=None, foreign_key="plan.id")
     plan: Optional["Plan"] = Relationship()
     plan_expire_at: Optional[datetime] = None
@@ -62,11 +62,10 @@ class User(UserBase, table=True):
     # doing_projects: List["Project"] = Relationship(
     #     back_populates="doer",
     # )
-    comments: List["Comment"] = Relationship(
-        back_populates="user_from",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
-    )
-
+    # comments: List["Comment"] = Relationship(
+    #     back_populates="user_from",
+    #     sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    # )
 
 class SampleProjectOut(SQLModel):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -76,7 +75,7 @@ class SampleProjectOut(SQLModel):
 
 
 class SampleProject(SampleProjectOut, table=True):
-    user_id: Optional[int] = Field(nullable=False)
+    user_id: Optional[int] = Field(nullable=False, foreign_key="user.id")
     user: User = Relationship()
 
 
@@ -100,7 +99,7 @@ class EducationOut(SQLModel):
 
 
 class Education(EducationOut, table=True):
-    user_id: Optional[int] = Field(nullable=False)
+    user_id: Optional[int] = Field(nullable=False, foreign_key="user.id")
     user: User = Relationship()
 
 
@@ -121,15 +120,15 @@ class CommentIn(SQLModel):
 class Comment(SQLModel, table=True):
     star: Optional[int] = Field(default=0, nullable=False, gt=-1, lt=6)
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    project_id: Optional[int] = Field(nullable=False, primary_key=True)
+    project_id: Optional[int] = Field(primary_key=True, foreign_key="project.id")
     project: "Project" = Relationship()
-    from_user_id: Optional[int] = Field(nullable=False, primary_key=True)
-    to_user_id: Optional[int] = Field(nullable=False)
+    from_user_id: Optional[int] = Field(primary_key=True, foreign_key="user.id")
+    to_user_id: Optional[int] = Field(nullable=False, foreign_key="user.id")
     from_user: "User" = Relationship(
         sa_relationship_kwargs=dict(foreign_keys="[Comment.from_user_id]"),
     )
     to_user: "User" = Relationship(
-        back_populates="comments",
+        # back_populates="comments",
         sa_relationship_kwargs=dict(foreign_keys="[Comment.to_user_id]"),
     )
     message: str
@@ -155,7 +154,7 @@ class ExperienceOut(SQLModel):
 
 
 class Experience(ExperienceOut, table=True):
-    user_id: Optional[int] = Field(nullable=False)
+    user_id: Optional[int] = Field(nullable=False, foreign_key="user.id")
     user: User = Relationship()
 
 
@@ -170,6 +169,7 @@ class Technology(TechnologyCreate, table=True):
 class UserOut(UserBase):
     id: int
     description: Optional[str] = None
+    offer_left: int = Field(default=0, gt=-1)
     educations: List[EducationOut] = None
     experiences: List[ExperienceOut] = None
     sample_projects: List[SampleProjectOut] = None
@@ -194,6 +194,7 @@ class PlanChange(SQLModel):
 class Plan(PlanChange, table=True):
     users: List[User] = Relationship(back_populates="plan")
     duration_day: Optional[int] = None
+    offer_number: int
 
 
 class Role(SQLModel, table=True):

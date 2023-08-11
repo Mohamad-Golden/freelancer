@@ -34,6 +34,9 @@ from .models import (
     UserTechnology,
     Comment,
     CommentIn,
+    SampleProjectOut,
+    ExperienceOut,
+    EducationOut,
 )
 from .utils import (
     get_session,
@@ -93,17 +96,20 @@ class Router:
         except IntegrityError:
             raise conflict_exception
 
-    @router.get("/user", response_model=UserOut)
+    @router.get("/user", response_model=UserOut, response_model_exclude_none=True)
     def get_user_info(self, user_id: int):
         user = self.session.get(User, user_id)
         if user is None:
             raise not_found_exception
         avg_star = self.session.exec(
             select(Comment, func.avg(Comment.star).label("average")).where(
-                Comment.to_user_id == self.user_id
+                Comment.to_user_id == user_id
             )
-        )
-        user.star = avg_star
+        ).first()
+        if avg_star[1] is None:
+            user.star = 0
+        else:
+            user.star = avg_star[1]
         return user
 
     @router.post("/login")
@@ -112,7 +118,13 @@ class Router:
         if user.is_verified:
             access_token = create_access_token({"sub": str(user.id)})
             response = JSONResponse(status_code=200, content={})
-            response.set_cookie("access_token", access_token)
+            response.set_cookie(
+                key="access_token",
+                value=access_token,
+                expires=15 * 24 * 60 * 60,
+                httponly=True,
+                secure=True,
+            )
             return response
         else:
             raise credentials_exception
@@ -257,6 +269,10 @@ class AuthenticatedRouter:
         db_technologies = self.auth.session.exec(
             select(UserTechnology).where(UserTechnology.user_id == self.auth.user.id)
         ).all()
+        technologies_list = []
+        educations_list = []
+        experiences_list = []
+        sample_projects_list = []
 
         experiences_in = user_in.experiences.copy()
         for db_exp in db_experiences:
@@ -264,6 +280,8 @@ class AuthenticatedRouter:
             for exp_in in user_in.experiences:
                 if db_exp.id == exp_in.id:
                     db_exp.from_orm(exp_in)
+                    self.auth.session.add(db_exp)
+                    experiences_list.append(ExperienceOut.from_orm(db_exp))
                     experiences_in.remove(exp_in)
                     is_in_input = True
             if is_in_input is False:
@@ -271,7 +289,9 @@ class AuthenticatedRouter:
 
         for exp_in in experiences_in:
             new_exp = Experience.from_orm(exp_in)
+            new_exp.user = self.auth.user
             self.auth.session.add(new_exp)
+            experiences_list.append(ExperienceOut.from_orm(new_exp))
 
         educations_in = user_in.educations.copy()
         for db_edu in db_educations:
@@ -279,6 +299,8 @@ class AuthenticatedRouter:
             for edu_in in user_in.educations:
                 if db_edu.id == edu_in.id:
                     db_edu.from_orm(edu_in)
+                    self.auth.session.add(db_edu)
+                    educations_list.append(EducationOut.from_orm(db_edu))
                     educations_in.remove(edu_in)
                     is_in_input = True
             if is_in_input is False:
@@ -286,14 +308,17 @@ class AuthenticatedRouter:
 
         for edu_in in educations_in:
             new_edu = Education.from_orm(edu_in)
+            new_edu.user = self.auth.user
             self.auth.session.add(new_edu)
+            educations_list.append(EducationOut.from_orm(new_edu))
 
         sample_projects_in = user_in.sample_projects.copy()
         for sample_db in db_sample_project:
             is_in_input = False
             for sample_in in user_in.sample_projects:
                 if sample_db.id == sample_in.id:
-                    sample_db.from_orm(sample_in)
+                    self.auth.session.add(sample_db)
+                    sample_projects_list.append(SampleProjectOut.from_orm(sample_db))
                     sample_projects_in.remove(sample_in)
                     is_in_input = True
             if is_in_input is False:
@@ -301,32 +326,47 @@ class AuthenticatedRouter:
 
         for sample_in in sample_projects_in:
             new_sample = SampleProject.from_orm(sample_in)
+            new_sample.user = self.auth.user
             self.auth.session.add(new_sample)
+            sample_projects_list.append(SampleProjectOut.from_orm(new_sample))
 
         technologies_id = user_in.technologies_id.copy()
         for tech_db in db_technologies:
-            if tech_db.id in user_in.technologies_id:
-                technologies_id.remove(tech_db.id)
+            if tech_db.technology_id in user_in.technologies_id:
+                technologies_id.remove(tech_db.technology_id)
             else:
                 self.auth.session.delete(tech_db)
 
         for tech_id in technologies_id:
             new_user_tech = UserTechnology(technology_id=tech_id, user=self.auth.user)
+            technologies_list.append(new_user_tech.technology)
             self.auth.session.add(new_user_tech)
 
         self.auth.session.commit()
+        self.auth.session.refresh(self.auth.user)
+        user_out = UserOut.from_orm(self.auth.user)
+        user_out.experiences = experiences_list
+        user_out.educations = educations_list
+        user_out.sample_projects = sample_projects_list
+        user_out.technologies = technologies_list
+        return user_out
 
     @authenticated_router.post("/offer", status_code=201)
     def create_offer(self, offer_in: OfferCreate):
         project = self.auth.session.get(Project, offer_in.project_id)
-        if project:
-            offer = Offer.from_orm(offer_in)
-            offer.offerer = self.auth.user
-            self.auth.session.add(offer)
-            self.auth.session.commit()
-            return JSONResponse(status_code=201, content={})
+        if self.auth.user.offer_left > 0:
+            if project:
+                offer = Offer.from_orm(offer_in)
+                offer.offerer = self.auth.user
+                self.auth.session.add(offer)
+                self.auth.user.offer_left = self.auth.user.offer_left - 1
+                self.auth.session.add(self.auth.user)
+                self.auth.session.commit()
+                return JSONResponse(status_code=201, content={})
+            else:
+                raise not_found_exception
         else:
-            raise not_found_exception
+            raise permission_exception
 
     @authenticated_router.post("/comment", status_code=201)
     def create_comment(self, comment_in: CommentIn):
@@ -336,20 +376,23 @@ class AuthenticatedRouter:
         to_user = self.auth.session.get(User, comment_in.to_user_id)
         if to_user is None:
             raise not_found_exception
-
-        try:
-            new_comment = Comment.from_orm(comment_in)
-            new_comment.from_user = self.auth.user
-            self.auth.session.add(new_comment)
-            self.auth.session.commit()
-        except IntegrityError:
+        if self.auth.user == project.doer or self.auth.user == project.owner:
+            try:
+                new_comment = Comment.from_orm(comment_in)
+                new_comment.from_user = self.auth.user
+                self.auth.session.add(new_comment)
+                self.auth.session.commit()
+            except IntegrityError:
+                raise permission_exception
+        else:
             raise permission_exception
 
     @authenticated_router.patch("/plan", response_model=PlanChange)
     def upgrade_user_plan(self, plan_id: int):
-        if self.auth.user.plan.title != PlanEnum.free:
-            raise permission_exception
         plan = self.auth.session.get(Plan, plan_id)
+        if plan.title == PlanEnum.free:
+            raise permission_exception
+
         if plan:
             self.auth.user.plan = plan
             match plan.title:
@@ -367,7 +410,7 @@ class AuthenticatedRouter:
                     )
                 case _:
                     self.auth.user.plan_expire_at = None
-
+            self.auth.user.offer_left = self.auth.user.offer_left + plan.offer_number
             self.auth.session.add(self.auth.user)
             self.auth.session.commit()
             return plan

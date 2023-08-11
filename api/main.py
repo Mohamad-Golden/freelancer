@@ -6,6 +6,7 @@ from fastapi.openapi.utils import get_openapi
 # for landing page
 from fastapi import Request, Depends, status, HTTPException
 from fastapi.templating import Jinja2Templates
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.staticfiles import StaticFiles
 from fastapi_utils.inferring_router import InferringRouter
 from fastapi.exceptions import RequestValidationError
@@ -38,15 +39,16 @@ def startup():
         session.add(admin)
         session.add(freelancer)
         session.add(employer)
-        free = Plan(title="free")
-        bronze = Plan(title="bronze", duration_day=30)
-        gold = Plan(title="gold", duration_day=60)
-        diamond = Plan(title="diamond", duration_day=90)
+        free = Plan(title="free", offer_number=5)
+        bronze = Plan(title="bronze", duration_day=30, offer_number=50)
+        gold = Plan(title="gold", duration_day=60, offer_number=150)
+        diamond = Plan(title="diamond", duration_day=90, offer_number=350)
         user = User(
             email="user@example.com",
             hashed_password=hashlib.md5(b"string").hexdigest(),
-            role_id=1,
-            plan_id=1,
+            role=admin,
+            plan=free,
+            offer_left=free.offer_number,
             is_verified=True,
         )
         session.add(user)
@@ -62,9 +64,34 @@ def get_application():
     # startup()
     _app = FastAPI(
         openapi_url=settings.URL_PREFIX + "/openapi.json",
-        docs_url=settings.URL_PREFIX + "/docs",
     )
+
+    def custom_openapi():
+        if _app.openapi_schema:
+            return _app.openapi_schema
+        openapi_schema = get_openapi(
+            title="Freelancer Api Documentation",
+            version="1.0.0",
+            description="Use login route to authorize",
+            routes=_app.routes,
+        )
+        _app.openapi_schema = openapi_schema
+        return _app.openapi_schema
+
+    _app.openapi = custom_openapi
     apiRouter = InferringRouter(prefix=settings.URL_PREFIX)
+
+    @apiRouter.get("/docs", include_in_schema=False)
+    async def custom_swagger_ui_html():
+        return get_swagger_ui_html(
+            openapi_url=_app.openapi_url,
+            title=_app.title + " - Swagger UI Freelancer",
+            oauth2_redirect_url=_app.swagger_ui_oauth2_redirect_url,
+            swagger_ui_parameters={
+                'docExpansion': None
+            }
+        )
+
     # _app.add_middleware(
     #     CORSMiddleware,
     #     allow_origins=[],
