@@ -87,9 +87,7 @@ def get_application():
             openapi_url=_app.openapi_url,
             title=_app.title + " - Swagger UI Freelancer",
             oauth2_redirect_url=_app.swagger_ui_oauth2_redirect_url,
-            swagger_ui_parameters={
-                'docExpansion': None
-            }
+            swagger_ui_parameters={"docExpansion": None},
         )
 
     # _app.add_middleware(

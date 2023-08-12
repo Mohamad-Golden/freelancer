@@ -97,3 +97,9 @@ def validate_user(session: Session, email: str, password: str) -> User:
 def sendmail(email: str, message: str):
     with open("mails", "a") as f:
         f.write(f"{email}: {message}\n")
+
+
+def update_model(origin_obj, update_obj):
+    update_data = update_obj.dict()
+    for key, value in update_data.items():
+        setattr(origin_obj, key, value)

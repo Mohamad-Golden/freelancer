@@ -9,13 +9,12 @@ load_dotenv(override=True)
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = os.environ["DATABASE_URL"]
     SESSION_KEY: str = os.environ["SESSION_KEY"]
     URL_PREFIX: str = os.environ["URL_PREFIX"]
-
-    class Config:
-        env_file = ".env"
-
+    POSTGRES_USERNAME: str = os.environ["POSTGRES_USERNAME"]
+    POSTGRES_PASSWORD: str = os.environ["POSTGRES_PASSWORD"]
+    DATABASE_NAME: str = os.environ["DATABASE_NAME"]
+    
 
 @lru_cache()
 def get_setting():

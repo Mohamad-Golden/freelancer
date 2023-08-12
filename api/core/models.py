@@ -25,16 +25,18 @@ class UserTechnology(SQLModel, table=True):
     technology_id: Optional[int] = Field(
         default=None, foreign_key="technology.id", primary_key=True
     )
-    technology: "Technology" = Relationship()
+    technology: "Technology" = Relationship(back_populates="user_technologies")
     user_id: Optional[int] = Field(
         default=None, foreign_key="user.id", primary_key=True
     )
-    user: "User" = Relationship()
+    user: "User" = Relationship(back_populates="user_technologies")
 
 
 class UserShortOut(UserBase):
     id: Optional[int] = Field(default=None, primary_key=True)
 
+class PickDoer(SQLModel):
+    doer: UserShortOut
 
 class User(UserBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -52,7 +54,7 @@ class User(UserBase, table=True):
     # projects: List["Project"] = Relationship(
     #     back_populates="owner",
     # )
-    technologies: List["Technology"] = Relationship(link_model=UserTechnology)
+    user_technologies: List["UserTechnology"] = Relationship(back_populates="user")
     reset_token: Optional["ResetPasswordToken"] = Relationship(
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}, back_populates="user"
     )
@@ -66,6 +68,7 @@ class User(UserBase, table=True):
     #     back_populates="user_from",
     #     sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     # )
+
 
 class SampleProjectOut(SQLModel):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -113,7 +116,7 @@ class CommentOut(SQLModel):
 class CommentIn(SQLModel):
     star: Optional[int] = Field(default=0, nullable=False, gt=-1, lt=6)
     to_user_id: int
-    to_project_id: int
+    project_id: int
     message: str
 
 
@@ -162,8 +165,18 @@ class TechnologyCreate(SQLModel):
     title: str = Field(unique=True)
 
 
+class TechnologyOut(TechnologyCreate):
+    id: int
+
+
 class Technology(TechnologyCreate, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+    project_technologies: List["ProjectTechnology"] = Relationship(
+        back_populates="technology"
+    )
+    user_technologies: List["UserTechnology"] = Relationship(
+        back_populates="technology"
+    )
 
 
 class UserOut(UserBase):
@@ -174,7 +187,7 @@ class UserOut(UserBase):
     experiences: List[ExperienceOut] = None
     sample_projects: List[SampleProjectOut] = None
     comments: List[CommentOut] = None
-    technologies: List[Technology] = None
+    technologies: List[TechnologyOut] = None
     star: Optional[int] = Field(default=0, nullable=False, gt=-1, lt=6)
 
 
@@ -250,8 +263,10 @@ class ProjectList(ProjectBase):
 
 
 class ProjectOut(ProjectBase):
-    technologies: List["Technology"] = None
+    technologies: List["TechnologyOut"] = None
     offers: List[OfferOut] = None
+    doer: Optional[UserShortOut] = None
+    owner: Optional[UserShortOut] = None
 
 
 class Project(ProjectBase, table=True):
@@ -267,18 +282,18 @@ class Project(ProjectBase, table=True):
     doer: Optional["User"] = Relationship(
         sa_relationship_kwargs=dict(foreign_keys="[Project.doer_id]")
     )
-    # technologies: List['Technology'] = Relationship(link_model='ProjectTechnology')
+    project_technologies: List['ProjectTechnology'] = Relationship(back_populates='project')
 
 
 class ProjectTechnology(SQLModel, table=True):
     technology_id: Optional[int] = Field(
         default=None, foreign_key="technology.id", primary_key=True
     )
-    technology: Technology = Relationship()
+    technology: Technology = Relationship(back_populates="project_technologies")
     project_id: Optional[int] = Field(
         default=None, foreign_key="project.id", primary_key=True
     )
-    project: Project = Relationship()
+    project: Project = Relationship(back_populates='project_technologies')
 
 
 class UserVerificationCode(SQLModel, table=True):

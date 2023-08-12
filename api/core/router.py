@@ -37,6 +37,8 @@ from .models import (
     SampleProjectOut,
     ExperienceOut,
     EducationOut,
+    TechnologyOut,
+    PickDoer
 )
 from .utils import (
     get_session,
@@ -46,6 +48,7 @@ from .utils import (
     authenticate_admin,
     Auth,
     sendmail,
+    update_model,
 )
 from .types import PlanEnum
 from sqlalchemy.exc import IntegrityError
@@ -102,15 +105,13 @@ class Router:
         if user is None:
             raise not_found_exception
         avg_star = self.session.exec(
-            select(Comment, func.avg(Comment.star).label("average")).where(
+            select(func.avg(Comment.star).label("average")).where(
                 Comment.to_user_id == user_id
             )
         ).first()
-        if avg_star[1] is None:
-            user.star = 0
-        else:
-            user.star = avg_star[1]
-        return user
+        user_out = UserOut.from_orm(user)
+        user_out.star = avg_star if avg_star else 0
+        return user_out
 
     @router.post("/login")
     def login(self, user_in: UserLogin):
@@ -230,16 +231,28 @@ class AuthenticatedRouter:
         response_model_exclude_none=True,
     )
     def create_project(self, project_in: ProjectIn):
+        project_technologies = []
         try:
             project = Project.from_orm(project_in)
             project.owner = self.auth.user
             if project_in.technologies_id:
                 for tech_id in project_in.technologies_id:
-                    self.auth.session.add(
-                        ProjectTechnology(technology_id=tech_id, project=project)
+                    project_tech = ProjectTechnology(
+                        technology_id=tech_id, project=project
                     )
+                    self.auth.session.add(project_tech)
+                    self.auth.session.commit()
+                    self.auth.session.refresh(project_tech)
+                    if project_tech.technology:
+                        project_technologies.append(
+                            TechnologyOut.from_orm(project_tech.technology)
+                        )
+
             self.auth.session.commit()
-            return project
+            project_out = ProjectOut.from_orm(project)
+            project_out.technologies = project_technologies
+            # print(project_out.technologies[0].title)
+            return project_out
         except IntegrityError:
             raise invalid_data_exception
 
@@ -249,7 +262,12 @@ class AuthenticatedRouter:
     def get_project_detail(self, project_id: int):
         project = self.auth.session.get(Project, project_id)
         if project:
-            return project
+            technologies = []
+            for tech_project in project.project_technologies:
+                technologies.append(TechnologyOut.from_orm(tech_project.technology))
+            project_out = ProjectOut.from_orm(project)
+            project_out.technologies = technologies
+            return project_out
         else:
             raise not_found_exception
 
@@ -269,93 +287,117 @@ class AuthenticatedRouter:
         db_technologies = self.auth.session.exec(
             select(UserTechnology).where(UserTechnology.user_id == self.auth.user.id)
         ).all()
+
+        technologies_in_list = (
+            user_in.technologies_id if user_in.technologies_id else []
+        )
+        educations_in_list = user_in.educations if user_in.educations else []
+        experiences_in_list = user_in.experiences if user_in.experiences else []
+        sample_projects_in_list = (
+            user_in.sample_projects if user_in.sample_projects else []
+        )
+
         technologies_list = []
         educations_list = []
         experiences_list = []
         sample_projects_list = []
+        try:
+            experiences_in = experiences_in_list.copy()
+            for db_exp in db_experiences:
+                is_in_input = False
+                for exp_in in experiences_in_list:
+                    if db_exp.id == exp_in.id:
+                        update_model(db_exp, exp_in)
+                        self.auth.session.add(db_exp)
+                        experiences_list.append(ExperienceOut.from_orm(db_exp))
+                        experiences_in.remove(exp_in)
+                        is_in_input = True
+                if is_in_input is False:
+                    self.auth.session.delete(db_exp)
 
-        experiences_in = user_in.experiences.copy()
-        for db_exp in db_experiences:
-            is_in_input = False
-            for exp_in in user_in.experiences:
-                if db_exp.id == exp_in.id:
-                    db_exp.from_orm(exp_in)
-                    self.auth.session.add(db_exp)
-                    experiences_list.append(ExperienceOut.from_orm(db_exp))
-                    experiences_in.remove(exp_in)
-                    is_in_input = True
-            if is_in_input is False:
-                self.auth.session.delete(db_exp)
+            for exp_in in experiences_in:
+                exp_in.id = None
+                new_exp = Experience.from_orm(exp_in)
+                new_exp.user = self.auth.user
+                self.auth.session.add(new_exp)
+                experiences_list.append(ExperienceOut.from_orm(new_exp))
 
-        for exp_in in experiences_in:
-            new_exp = Experience.from_orm(exp_in)
-            new_exp.user = self.auth.user
-            self.auth.session.add(new_exp)
-            experiences_list.append(ExperienceOut.from_orm(new_exp))
+            educations_in = educations_in_list.copy()
+            for db_edu in db_educations:
+                is_in_input = False
+                for edu_in in educations_in_list:
+                    if db_edu.id == edu_in.id:
+                        update_model(db_edu, edu_in)
+                        self.auth.session.add(db_edu)
+                        educations_list.append(EducationOut.from_orm(db_edu))
+                        educations_in.remove(edu_in)
+                        is_in_input = True
+                if is_in_input is False:
+                    self.auth.session.delete(db_edu)
 
-        educations_in = user_in.educations.copy()
-        for db_edu in db_educations:
-            is_in_input = False
-            for edu_in in user_in.educations:
-                if db_edu.id == edu_in.id:
-                    db_edu.from_orm(edu_in)
-                    self.auth.session.add(db_edu)
-                    educations_list.append(EducationOut.from_orm(db_edu))
-                    educations_in.remove(edu_in)
-                    is_in_input = True
-            if is_in_input is False:
-                self.auth.session.delete(db_edu)
+            for edu_in in educations_in:
+                edu_in.id = None
+                new_edu = Education.from_orm(edu_in)
+                new_edu.user = self.auth.user
+                self.auth.session.add(new_edu)
+                educations_list.append(EducationOut.from_orm(new_edu))
 
-        for edu_in in educations_in:
-            new_edu = Education.from_orm(edu_in)
-            new_edu.user = self.auth.user
-            self.auth.session.add(new_edu)
-            educations_list.append(EducationOut.from_orm(new_edu))
+            sample_projects_in = sample_projects_in_list.copy()
+            for sample_db in db_sample_project:
+                is_in_input = False
+                for sample_in in sample_projects_in_list:
+                    if sample_db.id == sample_in.id:
+                        update_model(sample_db, sample_in)
+                        self.auth.session.add(sample_db)
+                        sample_projects_list.append(
+                            SampleProjectOut.from_orm(sample_db)
+                        )
+                        sample_projects_in.remove(sample_in)
+                        is_in_input = True
+                if is_in_input is False:
+                    self.auth.session.delete(sample_db)
 
-        sample_projects_in = user_in.sample_projects.copy()
-        for sample_db in db_sample_project:
-            is_in_input = False
-            for sample_in in user_in.sample_projects:
-                if sample_db.id == sample_in.id:
-                    self.auth.session.add(sample_db)
-                    sample_projects_list.append(SampleProjectOut.from_orm(sample_db))
-                    sample_projects_in.remove(sample_in)
-                    is_in_input = True
-            if is_in_input is False:
-                self.auth.session.delete(sample_db)
+            for sample_in in sample_projects_in:
+                sample_in.id = None
+                new_sample = SampleProject.from_orm(sample_in)
+                new_sample.user = self.auth.user
+                self.auth.session.add(new_sample)
+                sample_projects_list.append(SampleProjectOut.from_orm(new_sample))
 
-        for sample_in in sample_projects_in:
-            new_sample = SampleProject.from_orm(sample_in)
-            new_sample.user = self.auth.user
-            self.auth.session.add(new_sample)
-            sample_projects_list.append(SampleProjectOut.from_orm(new_sample))
+            technologies_id = technologies_in_list.copy()
+            for tech_db in db_technologies:
+                if tech_db.technology_id in technologies_in_list:
+                    technologies_list.append(TechnologyOut.from_orm(tech_db.technology))
+                    technologies_id.remove(tech_db.technology_id)
+                else:
+                    self.auth.session.delete(tech_db)
 
-        technologies_id = user_in.technologies_id.copy()
-        for tech_db in db_technologies:
-            if tech_db.technology_id in user_in.technologies_id:
-                technologies_id.remove(tech_db.technology_id)
-            else:
-                self.auth.session.delete(tech_db)
+            for tech_id in technologies_id:
+                tech = self.auth.session.get(Technology, tech_id)
+                new_user_tech = UserTechnology(technology=tech, user=self.auth.user)
+                self.auth.session.add(new_user_tech)
+                technologies_list.append(TechnologyOut.from_orm(tech))
+            self.auth.session.commit()
+        except IntegrityError:
+            raise invalid_data_exception
 
-        for tech_id in technologies_id:
-            new_user_tech = UserTechnology(technology_id=tech_id, user=self.auth.user)
-            technologies_list.append(new_user_tech.technology)
-            self.auth.session.add(new_user_tech)
-
-        self.auth.session.commit()
-        self.auth.session.refresh(self.auth.user)
         user_out = UserOut.from_orm(self.auth.user)
         user_out.experiences = experiences_list
         user_out.educations = educations_list
         user_out.sample_projects = sample_projects_list
         user_out.technologies = technologies_list
+        avg_star = self.auth.session.exec(
+            select(func.avg(Comment.star).label("average")).where(
+                Comment.to_user_id == self.auth.user.id
+            )
+        ).first()
+        user_out.star = avg_star if avg_star else 0
         return user_out
 
     @authenticated_router.post("/offer", status_code=201)
     def create_offer(self, offer_in: OfferCreate):
-        project = self.auth.session.get(Project, offer_in.project_id)
         if self.auth.user.offer_left > 0:
-            if project:
+            try:
                 offer = Offer.from_orm(offer_in)
                 offer.offerer = self.auth.user
                 self.auth.session.add(offer)
@@ -363,8 +405,23 @@ class AuthenticatedRouter:
                 self.auth.session.add(self.auth.user)
                 self.auth.session.commit()
                 return JSONResponse(status_code=201, content={})
-            else:
-                raise not_found_exception
+            except IntegrityError:
+                raise permission_exception
+        else:
+            raise permission_exception
+
+    @authenticated_router.post("/doer", response_model=PickDoer)
+    def add_doer(self, project_id: int, doer_id: int):
+        project = self.auth.session.get(Project, project_id)
+        if project and project.owner == self.auth.user and project.doer is None:
+            try:
+                project.doer_id = doer_id
+                self.auth.session.add(project)
+                self.auth.session.commit()
+                self.auth.session.refresh(project)
+                return PickDoer(doer=project.doer)
+            except IntegrityError:
+                raise permission_exception
         else:
             raise permission_exception
 
@@ -376,12 +433,17 @@ class AuthenticatedRouter:
         to_user = self.auth.session.get(User, comment_in.to_user_id)
         if to_user is None:
             raise not_found_exception
-        if self.auth.user == project.doer or self.auth.user == project.owner:
+        if (
+            self.auth.user == project.doer
+            or self.auth.user == project.owner
+            or self.auth.user == to_user
+        ):
             try:
                 new_comment = Comment.from_orm(comment_in)
                 new_comment.from_user = self.auth.user
                 self.auth.session.add(new_comment)
                 self.auth.session.commit()
+                return JSONResponse(status_code=201, content={})
             except IntegrityError:
                 raise permission_exception
         else:
@@ -422,7 +484,7 @@ class AuthenticatedRouter:
 class AuthenticatedRouter:
     auth: Auth = Depends(authenticate_admin)
 
-    @admin_router.post("/technology", response_model=Technology, status_code=201)
+    @admin_router.post("/technology", response_model=TechnologyOut, status_code=201)
     def create_technology(self, technology_in: TechnologyCreate):
         try:
             technology = Technology.from_orm(technology_in)
