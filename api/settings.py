@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os
 
 # if .env file exists, get the environment variables from there,
-# else from actual environment variabls
+# else from actual environment variables
 load_dotenv(override=True)
 
 

@@ -2,11 +2,12 @@ from fastapi_utils.cbv import cbv
 from fastapi_utils.inferring_router import InferringRouter
 from fastapi.responses import JSONResponse
 from sqlmodel import select, Session, func
-from fastapi import Depends, Body
+from fastapi import Depends, Body, Query
 from pydantic import Field, EmailStr
 from typing import List
 from hashlib import md5
 from datetime import datetime, timedelta
+from slugify import slugify
 
 from .models import (
     UserCreate,
@@ -38,7 +39,7 @@ from .models import (
     ExperienceOut,
     EducationOut,
     TechnologyOut,
-    PickDoer
+    PickDoer,
 )
 from .utils import (
     get_session,
@@ -89,6 +90,7 @@ class Router:
         try:
             user.plan = plan
             user.role = role
+            user.offer_left = plan.offer_number
             self.session.add(user)
             verification_code = UserVerificationCode(user=user)
             sendmail(user_in.email, verification_code.code)
@@ -216,8 +218,59 @@ class Router:
     @router.get(
         "/project", response_model=List[ProjectList], response_model_exclude_none=True
     )
-    def list_projects(self):
-        return self.session.exec(select(Project).order_by(Project.expire_at)).all()
+    def list_projects(
+        self,
+        tech: List[str] | None = Query(None, max_length=30),
+        title: str | None = None,
+        page: int = 1,
+        limit: int = Query(10, lt=51),
+    ):
+        where_clause = [
+            Project.id == ProjectTechnology.project_id,
+            Technology.id == ProjectTechnology.technology_id,
+        ]
+        if tech:
+            where_clause.append(
+                Technology.slug.in_(tech),
+            )
+        elif title:
+            where_clause.append(
+                Project.title.like("%" + title + "%"),
+            )
+
+        result = self.session.exec(
+            select(Project, ProjectTechnology, Technology)
+            .where(*where_clause)
+            .order_by(Project.created_at.desc())
+            .where(
+                Project.id.in_(
+                    select(Project.id)
+                    .order_by(Project.created_at.desc())
+                    .offset((page - 1) * limit)
+                    .limit(limit)
+                )
+            )
+        )
+        projects = []
+        current_project = None
+        for pro, _, _ in result:
+            if current_project is None:
+                current_project = ProjectList.from_orm(pro)
+                current_project.technologies = []
+                for t in pro.project_technologies:
+                    current_project.technologies.append(t.technology)
+
+                last_id = pro.id
+                projects.append(current_project)
+
+            elif pro.id != last_id:
+                current_project = ProjectList.from_orm(pro)
+                current_project.technologies = []
+                for t in pro.project_technologies:
+                    current_project.technologies.append(t.technology)
+                projects.append(current_project)
+                last_id = current_project.id
+        return projects
 
 
 @cbv(authenticated_router)
@@ -251,10 +304,69 @@ class AuthenticatedRouter:
             self.auth.session.commit()
             project_out = ProjectOut.from_orm(project)
             project_out.technologies = project_technologies
-            # print(project_out.technologies[0].title)
             return project_out
         except IntegrityError:
             raise invalid_data_exception
+
+    @authenticated_router.get(
+        "/project/me",
+        response_model=List[ProjectList],
+        response_model_exclude_none=True,
+    )
+    def list_projects_me(
+        self,
+        title: str | None = None,
+        page: int = 1,
+        limit: int = Query(10, lt=51),
+    ):
+        where_clause = [
+            Project.id == ProjectTechnology.project_id,
+            Technology.id == ProjectTechnology.technology_id,
+        ]
+        techs = self.auth.session.exec(
+            select(UserTechnology).where(UserTechnology.user == self.auth.user)
+        ).all()
+        where_clause.append(
+            Technology.id.in_(map(lambda t: t.technology_id, techs)),
+        )
+        if title:
+            where_clause.append(
+                Project.title.like("%" + title + "%"),
+            )
+
+        result = self.auth.session.exec(
+            select(Project, ProjectTechnology, Technology)
+            .where(*where_clause)
+            .order_by(Project.created_at.desc())
+            .where(
+                Project.id.in_(
+                    select(Project.id)
+                    .order_by(Project.created_at.desc())
+                    .offset((page - 1) * limit)
+                    .limit(limit)
+                )
+            )
+        )
+        projects = []
+        current_project = None
+        for pro, _, _ in result:
+            if current_project is None:
+                current_project = ProjectList.from_orm(pro)
+                current_project.technologies = []
+                for t in pro.project_technologies:
+                    current_project.technologies.append(t.technology)
+
+                last_id = pro.id
+                projects.append(current_project)
+
+            elif pro.id != last_id:
+                current_project = ProjectList.from_orm(pro)
+                current_project.technologies = []
+                for t in pro.project_technologies:
+                    current_project.technologies.append(t.technology)
+                projects.append(current_project)
+                last_id = current_project.id
+        return projects
 
     @authenticated_router.get(
         "/project/detail", response_model=ProjectOut, response_model_exclude_none=True
@@ -374,6 +486,8 @@ class AuthenticatedRouter:
 
             for tech_id in technologies_id:
                 tech = self.auth.session.get(Technology, tech_id)
+                if tech is None:
+                    raise IntegrityError("", "", "")
                 new_user_tech = UserTechnology(technology=tech, user=self.auth.user)
                 self.auth.session.add(new_user_tech)
                 technologies_list.append(TechnologyOut.from_orm(tech))
@@ -434,10 +548,8 @@ class AuthenticatedRouter:
         if to_user is None:
             raise not_found_exception
         if (
-            self.auth.user == project.doer
-            or self.auth.user == project.owner
-            or self.auth.user == to_user
-        ):
+            self.auth.user == project.doer or self.auth.user == project.owner
+        ) and self.auth.user != to_user:
             try:
                 new_comment = Comment.from_orm(comment_in)
                 new_comment.from_user = self.auth.user
@@ -488,6 +600,7 @@ class AuthenticatedRouter:
     def create_technology(self, technology_in: TechnologyCreate):
         try:
             technology = Technology.from_orm(technology_in)
+            technology.slug = slugify(technology.title)
             self.auth.session.add(technology)
             self.auth.session.commit()
             return technology

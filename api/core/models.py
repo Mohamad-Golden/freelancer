@@ -35,8 +35,10 @@ class UserTechnology(SQLModel, table=True):
 class UserShortOut(UserBase):
     id: Optional[int] = Field(default=None, primary_key=True)
 
+
 class PickDoer(SQLModel):
     doer: UserShortOut
+
 
 class User(UserBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -167,6 +169,7 @@ class TechnologyCreate(SQLModel):
 
 class TechnologyOut(TechnologyCreate):
     id: int
+    slug: Optional[str] = None
 
 
 class Technology(TechnologyCreate, table=True):
@@ -177,6 +180,7 @@ class Technology(TechnologyCreate, table=True):
     user_technologies: List["UserTechnology"] = Relationship(
         back_populates="technology"
     )
+    slug: Optional[str] = Field(index=True, max_length=30, nullable=False)
 
 
 class UserOut(UserBase):
@@ -259,8 +263,7 @@ class ProjectBase(SQLModel):
 
 
 class ProjectList(ProjectBase):
-    pass
-
+    technologies: List["TechnologyOut"] = None
 
 class ProjectOut(ProjectBase):
     technologies: List["TechnologyOut"] = None
@@ -282,7 +285,9 @@ class Project(ProjectBase, table=True):
     doer: Optional["User"] = Relationship(
         sa_relationship_kwargs=dict(foreign_keys="[Project.doer_id]")
     )
-    project_technologies: List['ProjectTechnology'] = Relationship(back_populates='project')
+    project_technologies: List["ProjectTechnology"] = Relationship(
+        back_populates="project"
+    )
 
 
 class ProjectTechnology(SQLModel, table=True):
@@ -293,7 +298,7 @@ class ProjectTechnology(SQLModel, table=True):
     project_id: Optional[int] = Field(
         default=None, foreign_key="project.id", primary_key=True
     )
-    project: Project = Relationship(back_populates='project_technologies')
+    project: Project = Relationship(back_populates="project_technologies")
 
 
 class UserVerificationCode(SQLModel, table=True):

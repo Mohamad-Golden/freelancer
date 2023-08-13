@@ -9,7 +9,7 @@ def get_engine():
     if _engine is None:
         connection_string = f"postgresql://{settings.POSTGRES_USERNAME}:{settings.POSTGRES_PASSWORD}@localhost:5432/{settings.DATABASE_NAME}"
         # sqlite_file_name = "database.db"
-        # sqlite_url = f"sqlite:///{sqlite_file_name}"
+        # connection_string = f"sqlite:///{sqlite_file_name}"
         # connect_args = {"check_same_thread": False}
-        _engine = create_engine(connection_string)
+        _engine = create_engine(connection_string, echo=True)
     return _engine
