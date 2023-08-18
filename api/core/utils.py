@@ -1,18 +1,20 @@
 from jose import JWTError, jwt
-from typing import Annotated, Union
+from typing import Annotated, Union, List
 from datetime import datetime, timedelta
-from fastapi import Depends, Cookie
+from fastapi import Depends, Cookie, WebSocket
 from ..settings import settings
 
 from typing import Tuple
 
 from .responses import credentials_exception, not_found_exception
-from .models import User, Plan
-from sqlmodel import Session, select
+from .models import User, Plan, Message
+from sqlmodel import Session, select, or_
 from hashlib import md5
 from secrets import compare_digest
 from ..db import get_engine
 from .types import GeneralRole, PlanEnum
+
+from sqlalchemy.exc import IntegrityError, DataError
 from pydantic import BaseModel
 
 
@@ -94,12 +96,46 @@ def validate_user(session: Session, email: str, password: str) -> User:
     raise credentials_exception
 
 
-def sendmail(email: str, message: str):
+def sendmail(email: str, text: str):
     with open("mails", "a") as f:
-        f.write(f"{email}: {message}\n")
+        f.write(f"{email}: {text}\n")
 
 
 def update_model(origin_obj, update_obj):
     update_data = update_obj.dict()
     for key, value in update_data.items():
         setattr(origin_obj, key, value)
+
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, user_id: int, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append({user_id: websocket})
+
+    def disconnect(self, user_id: int):
+        del self.active_connections[user_id]
+
+    async def send_personal_message(self, auth: Auth, message_block: dict):
+        text = message_block.get("text")
+        to_user_id = message_block.get("to_user_id")
+        if to_user_id and text:
+            receiver_socket = self.active_connections.get(to_user_id)
+            if receiver_socket:
+                await receiver_socket.send_json(
+                    {
+                        "text": text,
+                        "to_user_id": to_user_id,
+                        "from_user_id": auth.user.id,
+                    }
+                )
+            try:
+                message_db = Message(
+                    text=text, to_user_id=to_user_id, from_user=auth.user
+                )
+                auth.session.add(message_db)
+                auth.session.commit()
+            except (IntegrityError, DataError):
+                raise not_found_exception

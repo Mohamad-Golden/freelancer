@@ -2,7 +2,7 @@ from sqlmodel import SQLModel, Field, Relationship, Session
 from pydantic import EmailStr
 from pydantic import root_validator
 from typing import Optional, List
-from .types import RoleEnum, PlanEnum
+from .types import RoleEnum
 
 from datetime import datetime, timedelta
 import string
@@ -22,6 +22,7 @@ class UserCreate(UserLogin):
 
 
 class UserTechnology(SQLModel, table=True):
+    #Freelancer's skills
     technology_id: Optional[int] = Field(
         default=None, foreign_key="technology.id", primary_key=True
     )
@@ -63,6 +64,16 @@ class User(UserBase, table=True):
     verification_code: Optional["UserVerificationCode"] = Relationship(
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}, back_populates="user"
     )
+    # followers: Optional["Follower"] = Relationship(
+    #     sa_relationship_kwargs={
+    #         "cascade": "all, delete-orphan",
+    #         "foreign_keys": "[Follower.follower_id]",
+    #     },
+    #     back_populates="follower",
+    # )
+    # followings: Optional["Follower"] = Relationship(
+    #     sa_relationship_kwargs={"cascade": "all, delete-orphan"}, back_populates="following"
+    # )
     # doing_projects: List["Project"] = Relationship(
     #     back_populates="doer",
     # )
@@ -262,14 +273,22 @@ class ProjectBase(SQLModel):
     deadline_until: Optional[datetime] = None
 
 
+class StatusOut(SQLModel):
+    id: int
+    title: str
+
+
 class ProjectList(ProjectBase):
     technologies: List["TechnologyOut"] = None
+    status: Optional["StatusOut"] = None
+
 
 class ProjectOut(ProjectBase):
     technologies: List["TechnologyOut"] = None
     offers: List[OfferOut] = None
     doer: Optional[UserShortOut] = None
     owner: Optional[UserShortOut] = None
+    status: Optional["StatusOut"] = None
 
 
 class Project(ProjectBase, table=True):
@@ -288,6 +307,14 @@ class Project(ProjectBase, table=True):
     project_technologies: List["ProjectTechnology"] = Relationship(
         back_populates="project"
     )
+    status_id: Optional[int] = Field(foreign_key="status.id", nullable=False)
+    status: "Status" = Relationship(back_populates="projects")
+
+
+class Status(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    title: str = Field(unique=True)
+    projects: Project = Relationship(back_populates="status")
 
 
 class ProjectTechnology(SQLModel, table=True):
@@ -331,3 +358,28 @@ class Offer(SQLModel, table=True):
     project: Project = Relationship(back_populates="offers")
     offer_price: int
     duration_day: int = Field(gt=-1)
+
+
+class Follower(SQLModel, table=True):
+    follower_id: Optional[int] = Field(foreign_key="user.id", primary_key=True)
+    follower: User = Relationship(
+        sa_relationship_kwargs=dict(foreign_keys="[Follower.follower_id]"),
+    )
+    following_id: Optional[int] = Field(foreign_key="user.id", primary_key=True)
+    following: User = Relationship(
+        sa_relationship_kwargs=dict(foreign_keys="[Follower.following_id]"),
+    )
+
+
+class Message(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    from_user_id: Optional[int] = Field(nullable=False, foreign_key='user.id')
+    from_user: User = Relationship(
+        sa_relationship_kwargs=dict(foreign_keys="[Message.from_user_id]"),
+    )
+    to_user_id: Optional[int] = Field(nullable=False, foreign_key='user.id')
+    to_user: User = Relationship(
+        sa_relationship_kwargs=dict(foreign_keys="[Message.to_user_id]"),
+    )
+    text: str
+    created_at: datetime = Field(default_factory=datetime.now, nullable=False)

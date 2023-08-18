@@ -14,7 +14,24 @@ class RoleEnum(str, Enum):
 
     # admin = "admin"
 
+
 class GeneralRole(str, Enum):
     admin = "admin"
     freelancer = "freelancer"
     employer = "employer"
+
+
+class ProjectStatusEnum(str, Enum):
+    done = "done"
+    unassigned = "unassigned"
+    assigned = "assigned"
+
+
+class SortEnum(str, Enum):
+    date = "created_at"
+    price = "price_to"
+
+
+class SortDirEnum(str, Enum):
+    ascending = "asc"
+    descending = "desc"

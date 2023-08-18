@@ -18,11 +18,9 @@ from .settings import settings
 from .core.router import admin_router
 from .core.router import router
 from .core.router import authenticated_router
-from .core.models import User, Role, Plan
+from .core.models import User, Role, Plan, Status
 from .db import get_engine
 import hashlib
-
-BASE_DIR = Path(__file__).resolve().parent
 
 
 def create_db_and_tables():
@@ -51,6 +49,12 @@ def startup():
             offer_left=free.offer_number,
             is_verified=True,
         )
+        unassigned = Status(title='unassigned')
+        assigned = Status(title='assigned')
+        done = Status(title='done')
+        session.add(unassigned)
+        session.add(done)
+        session.add(assigned)
         session.add(user)
         session.add(free)
         session.add(bronze)

@@ -4,5 +4,15 @@
     "editor.formatOnType": true,
     "editor.defaultFormatter": "ms-python.black-formatter"
   },
-  "cSpell.ignoreWords": ["fastapi", "pydantic", "sqlmodel", "starlette", "templating", "sqlalchemy", "dotenv"]
+  "cSpell.ignoreWords": [
+    "fastapi",
+    "pydantic",
+    "sqlmodel",
+    "starlette",
+    "templating",
+    "sqlalchemy",
+    "uvicorn",
+    "dotenv",
+    "websockets"
+  ]
 }

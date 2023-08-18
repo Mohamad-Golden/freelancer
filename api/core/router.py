@@ -1,18 +1,24 @@
 from fastapi_utils.cbv import cbv
 from fastapi_utils.inferring_router import InferringRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi.websockets import WebSocket, WebSocketDisconnect
 from sqlmodel import select, Session, func
-from fastapi import Depends, Body, Query
+from fastapi import Depends, Body, Query, UploadFile
 from pydantic import Field, EmailStr
-from typing import List
+from typing import List, Optional
 from hashlib import md5
 from datetime import datetime, timedelta
+import os
 from slugify import slugify
 
+from ..settings import settings
 from .models import (
     UserCreate,
     UserOut,
     User,
+    Follower,
+    Status,
+    UserShortOut,
     Plan,
     Role,
     UserVerificationCode,
@@ -50,9 +56,10 @@ from .utils import (
     Auth,
     sendmail,
     update_model,
+    ConnectionManager,
 )
-from .types import PlanEnum
-from sqlalchemy.exc import IntegrityError
+from .types import PlanEnum, ProjectStatusEnum, SortDirEnum, SortEnum
+from sqlalchemy.exc import IntegrityError, DataError
 from .responses import (
     conflict_exception,
     invalid_data_exception,
@@ -65,10 +72,49 @@ router = InferringRouter()
 authenticated_router = InferringRouter()
 admin_router = InferringRouter()
 
+connection_manager = ConnectionManager()
+html = """
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Chat</title>
+    </head>
+    <body>
+        <h1>WebSocket Chat</h1>
+        <form action="" onsubmit="sendMessage(event)">
+            <input type="text" id="messageText" autocomplete="off"/>
+            <button>Send</button>
+        </form>
+        <ul id='messages'>
+        </ul>
+        <script>
+            var ws = new WebSocket("ws://localhost:8000/ws");
+            ws.onmessage = function(event) {
+                var messages = document.getElementById('messages')
+                var message = document.createElement('li')
+                var content = document.createTextNode(event.data)
+                message.appendChild(content)
+                messages.appendChild(message)
+            };
+            function sendMessage(event) {
+                var input = document.getElementById("messageText")
+                ws.send(input.value)
+                input.value = ''
+                event.preventDefault()
+            }
+        </script>
+    </body>
+</html>
+"""
+
 
 @cbv(router)
 class Router:
     session: Session = Depends(get_session)
+
+    @router.get("/chat/test")
+    async def get(self):
+        return HTMLResponse(html)
 
     @router.post(
         "/user",
@@ -98,6 +144,23 @@ class Router:
             self.session.commit()
             self.session.refresh(user)
             return user
+        except IntegrityError:
+            raise conflict_exception
+
+    @router.post(
+        "/verify/resend",
+    )
+    def resend_verify_code(self, user_id: int):
+        try:
+            user = self.session.get(User, user_id)
+            if user is None:
+                raise not_found_exception
+
+            verification_code = UserVerificationCode(user_id=user_id)
+            sendmail(user.email, verification_code.code)
+            self.session.add(verification_code)
+            self.session.commit()
+            return JSONResponse(status_code=200, content={})
         except IntegrityError:
             raise conflict_exception
 
@@ -222,30 +285,64 @@ class Router:
         self,
         tech: List[str] | None = Query(None, max_length=30),
         title: str | None = None,
+        sort: SortEnum = SortEnum.date,
+        sort_dir: SortDirEnum = SortDirEnum.descending,
+        min_price: Optional[int] = 0,
+        max_price: Optional[int] = None,
+        is_open: Optional[bool] = Query(None, alias="open"),
         page: int = 1,
         limit: int = Query(10, lt=51),
     ):
+        select_clause = [Project, Status]
         where_clause = [
-            Project.id == ProjectTechnology.project_id,
-            Technology.id == ProjectTechnology.technology_id,
+            Project.status_id == Status.id,
+            Project.price_to >= min_price,
         ]
-        if tech:
+        second_where_clause = [
+            Project.price_to >= min_price,
+        ]
+        if max_price:
             where_clause.append(
-                Technology.slug.in_(tech),
+                Project.price_to <= max_price,
             )
-        elif title:
+            second_where_clause.append(
+                Project.price_to <= max_price,
+            )
+        if is_open is not None:
+            open_clause = (
+                Status.title == ProjectStatusEnum.unassigned
+                if is_open
+                else Status.title != ProjectStatusEnum.unassigned
+            )
+            where_clause.append(open_clause)
+            second_where_clause.append(open_clause)
+
+        if tech:
+            where_clause += [
+                Project.id == ProjectTechnology.project_id,
+                Technology.id == ProjectTechnology.technology_id,
+                Technology.slug.in_(tech),
+            ]
+            select_clause += [ProjectTechnology, Technology]
+
+        if title:
             where_clause.append(
+                Project.title.like("%" + title + "%"),
+            )
+            second_where_clause.append(
                 Project.title.like("%" + title + "%"),
             )
 
         result = self.session.exec(
-            select(Project, ProjectTechnology, Technology)
+            select(*select_clause)
             .where(*where_clause)
-            .order_by(Project.created_at.desc())
+            .order_by(getattr(getattr(Project, sort.value), sort_dir.value)())
             .where(
                 Project.id.in_(
                     select(Project.id)
-                    .order_by(Project.created_at.desc())
+                    .join(Status)
+                    .where(*second_where_clause)
+                    .order_by(getattr(getattr(Project, sort.value), sort_dir.value)())
                     .offset((page - 1) * limit)
                     .limit(limit)
                 )
@@ -253,7 +350,8 @@ class Router:
         )
         projects = []
         current_project = None
-        for pro, _, _ in result:
+        for res in result:
+            pro = res[0]
             if current_project is None:
                 current_project = ProjectList.from_orm(pro)
                 current_project.technologies = []
@@ -270,6 +368,7 @@ class Router:
                     current_project.technologies.append(t.technology)
                 projects.append(current_project)
                 last_id = current_project.id
+
         return projects
 
 
@@ -288,6 +387,10 @@ class AuthenticatedRouter:
         try:
             project = Project.from_orm(project_in)
             project.owner = self.auth.user
+            status = self.auth.session.exec(
+                select(Status).where(Status.title == ProjectStatusEnum.unassigned)
+            ).first()
+            project.status = status
             if project_in.technologies_id:
                 for tech_id in project_in.technologies_id:
                     project_tech = ProjectTechnology(
@@ -305,43 +408,47 @@ class AuthenticatedRouter:
             project_out = ProjectOut.from_orm(project)
             project_out.technologies = project_technologies
             return project_out
-        except IntegrityError:
+
+        except (IntegrityError, DataError):
             raise invalid_data_exception
 
     @authenticated_router.get(
-        "/project/me",
+        "/my-assigned/projects",
         response_model=List[ProjectList],
         response_model_exclude_none=True,
     )
-    def list_projects_me(
+    def list_my_assigned_projects(
         self,
         title: str | None = None,
+        sort: SortEnum = SortEnum.date,
+        sort_dir: SortDirEnum = SortDirEnum.descending,
+        is_open: Optional[bool] = Query(None, alias="open"),
         page: int = 1,
         limit: int = Query(10, lt=51),
     ):
-        where_clause = [
-            Project.id == ProjectTechnology.project_id,
-            Technology.id == ProjectTechnology.technology_id,
-        ]
-        techs = self.auth.session.exec(
-            select(UserTechnology).where(UserTechnology.user == self.auth.user)
-        ).all()
-        where_clause.append(
-            Technology.id.in_(map(lambda t: t.technology_id, techs)),
-        )
+        where_clause = [Project.doer == self.auth.user]
         if title:
             where_clause.append(
                 Project.title.like("%" + title + "%"),
             )
+        if is_open is not None:
+            open_clause = (
+                Status.title == ProjectStatusEnum.unassigned
+                if is_open
+                else Status.title != ProjectStatusEnum.unassigned
+            )
+            where_clause.append(open_clause)
 
         result = self.auth.session.exec(
-            select(Project, ProjectTechnology, Technology)
+            select(Project, Status)
             .where(*where_clause)
-            .order_by(Project.created_at.desc())
+            .order_by(getattr(getattr(Project, sort.value), sort_dir.value)())
             .where(
                 Project.id.in_(
                     select(Project.id)
-                    .order_by(Project.created_at.desc())
+                    .join(Status)
+                    .where(*where_clause)
+                    .order_by(getattr(getattr(Project, sort.value), sort_dir.value)())
                     .offset((page - 1) * limit)
                     .limit(limit)
                 )
@@ -349,7 +456,8 @@ class AuthenticatedRouter:
         )
         projects = []
         current_project = None
-        for pro, _, _ in result:
+        for res in result:
+            pro = res[0]
             if current_project is None:
                 current_project = ProjectList.from_orm(pro)
                 current_project.technologies = []
@@ -366,6 +474,173 @@ class AuthenticatedRouter:
                     current_project.technologies.append(t.technology)
                 projects.append(current_project)
                 last_id = current_project.id
+
+        return projects
+
+    @authenticated_router.get(
+        "/my/projects",
+        response_model=List[ProjectList],
+        response_model_exclude_none=True,
+    )
+    def list_my_projects(
+        self,
+        title: str | None = None,
+        sort: SortEnum = SortEnum.date,
+        sort_dir: SortDirEnum = SortDirEnum.descending,
+        is_open: Optional[bool] = Query(None, alias="open"),
+        page: int = 1,
+        limit: int = Query(10, lt=51),
+    ):
+        where_clause = [Project.owner == self.auth.user]
+        if title:
+            where_clause.append(
+                Project.title.like("%" + title + "%"),
+            )
+        if is_open is not None:
+            open_clause = (
+                Status.title == ProjectStatusEnum.unassigned
+                if is_open
+                else Status.title != ProjectStatusEnum.unassigned
+            )
+            where_clause.append(open_clause)
+
+        result = self.auth.session.exec(
+            select(Project, Status)
+            .where(*where_clause)
+            .order_by(getattr(getattr(Project, sort.value), sort_dir.value)())
+            .where(
+                Project.id.in_(
+                    select(Project.id)
+                    .join(Status)
+                    .where(*where_clause)
+                    .order_by(getattr(getattr(Project, sort.value), sort_dir.value)())
+                    .offset((page - 1) * limit)
+                    .limit(limit)
+                )
+            )
+        )
+        projects = []
+        current_project = None
+        for res in result:
+            pro = res[0]
+            if current_project is None:
+                current_project = ProjectList.from_orm(pro)
+                current_project.technologies = []
+                for t in pro.project_technologies:
+                    current_project.technologies.append(t.technology)
+
+                last_id = pro.id
+                projects.append(current_project)
+
+            elif pro.id != last_id:
+                current_project = ProjectList.from_orm(pro)
+                current_project.technologies = []
+                for t in pro.project_technologies:
+                    current_project.technologies.append(t.technology)
+                projects.append(current_project)
+                last_id = current_project.id
+
+        return projects
+
+    @authenticated_router.get(
+        "/project/me",
+        response_model=List[ProjectList],
+        summary="list projects with my skill",
+        response_model_exclude_none=True,
+    )
+    def list_projects_me(
+        self,
+        title: str | None = None,
+        sort: SortEnum = SortEnum.date,
+        sort_dir: SortDirEnum = SortDirEnum.descending,
+        min_price: Optional[int] = 0,
+        max_price: Optional[int] = None,
+        is_open: Optional[bool] = Query(None, alias="open"),
+        page: int = 1,
+        limit: int = Query(10, lt=51),
+    ):
+        select_clause = [Project, Status]
+        where_clause = [
+            Project.status_id == Status.id,
+            Project.price_to >= min_price,
+        ]
+        techs = self.auth.session.exec(
+            select(UserTechnology).where(UserTechnology.user == self.auth.user)
+        ).all()
+        where_clause.append(
+            Technology.id.in_(map(lambda t: t.technology_id, techs)),
+        )
+        second_where_clause = [
+            Project.price_to >= min_price,
+        ]
+        if max_price:
+            where_clause.append(
+                Project.price_to <= max_price,
+            )
+            second_where_clause.append(
+                Project.price_to <= max_price,
+            )
+        if is_open is not None:
+            open_clause = (
+                Status.title == ProjectStatusEnum.unassigned
+                if is_open
+                else Status.title != ProjectStatusEnum.unassigned
+            )
+            where_clause.append(open_clause)
+            second_where_clause.append(open_clause)
+
+        if techs:
+            where_clause += [
+                Project.id == ProjectTechnology.project_id,
+                Technology.id == ProjectTechnology.technology_id,
+                Technology.slug.in_(techs),
+            ]
+            select_clause += [ProjectTechnology, Technology]
+
+        if title:
+            where_clause.append(
+                Project.title.like("%" + title + "%"),
+            )
+            second_where_clause.append(
+                Project.title.like("%" + title + "%"),
+            )
+
+        result = self.auth.session.exec(
+            select(*select_clause)
+            .where(*where_clause)
+            .order_by(getattr(getattr(Project, sort.value), sort_dir.value)())
+            .where(
+                Project.id.in_(
+                    select(Project.id)
+                    .join(Status)
+                    .where(*second_where_clause)
+                    .order_by(getattr(getattr(Project, sort.value), sort_dir.value)())
+                    .offset((page - 1) * limit)
+                    .limit(limit)
+                )
+            )
+        )
+        projects = []
+        current_project = None
+        for res in result:
+            pro = res[0]
+            if current_project is None:
+                current_project = ProjectList.from_orm(pro)
+                current_project.technologies = []
+                for t in pro.project_technologies:
+                    current_project.technologies.append(t.technology)
+
+                last_id = pro.id
+                projects.append(current_project)
+
+            elif pro.id != last_id:
+                current_project = ProjectList.from_orm(pro)
+                current_project.technologies = []
+                for t in pro.project_technologies:
+                    current_project.technologies.append(t.technology)
+                projects.append(current_project)
+                last_id = current_project.id
+
         return projects
 
     @authenticated_router.get(
@@ -382,6 +657,76 @@ class AuthenticatedRouter:
             return project_out
         else:
             raise not_found_exception
+
+    @authenticated_router.post(
+        "/follow",
+        response_model=UserShortOut,
+    )
+    def add_followings(self, user_id: int):
+        try:
+            if user_id == self.auth.user.id:
+                raise permission_exception
+
+            follow = Follower(follower=self.auth.user, following_id=user_id)
+            self.auth.session.add(follow)
+            self.auth.session.commit()
+            self.auth.session.refresh(follow)
+            return follow.following
+        except IntegrityError:
+            raise not_found_exception
+
+    @authenticated_router.delete(
+        "/follow",
+        response_model=UserShortOut,
+    )
+    def remove_followings(self, user_id: int):
+        try:
+            follow = self.auth.session.exec(
+                select(Follower).where(
+                    Follower.follower == self.auth.user,
+                    Follower.following_id == user_id,
+                )
+            ).first()
+            if follow:
+                self.auth.session.delete(follow)
+                self.auth.session.commit()
+                return JSONResponse(status_code=200, content={})
+            else:
+                raise not_found_exception
+        except IntegrityError:
+            raise permission_exception
+
+    @authenticated_router.get(
+        "/followings",
+        response_model=List[UserShortOut],
+    )
+    def list_followings(self):
+        result = self.auth.session.exec(
+            select(Follower, User).where(
+                Follower.following_id == User.id, Follower.follower == self.auth.user
+            )
+        )
+        followings = []
+        for _, user in result:
+            followings.append(user)
+
+        return followings
+
+    @authenticated_router.get(
+        "/followers",
+        response_model=List[UserShortOut],
+    )
+    def list_followers(self):
+        result = self.auth.session.exec(
+            select(Follower, User).where(
+                Follower.follower_id == User.id, Follower.following == self.auth.user
+            )
+        )
+        followings = []
+        for _, user in result:
+            followings.append(user)
+
+        return followings
 
     @authenticated_router.put(
         "/user", response_model=UserOut, response_model_exclude_none=True
@@ -508,7 +853,7 @@ class AuthenticatedRouter:
         user_out.star = avg_star if avg_star else 0
         return user_out
 
-    @authenticated_router.post("/offer", status_code=201)
+    @authenticated_router.post("/project/offer", status_code=201)
     def create_offer(self, offer_in: OfferCreate):
         if self.auth.user.offer_left > 0:
             try:
@@ -524,12 +869,42 @@ class AuthenticatedRouter:
         else:
             raise permission_exception
 
-    @authenticated_router.post("/doer", response_model=PickDoer)
-    def add_doer(self, project_id: int, doer_id: int):
+    @authenticated_router.post("/project/done")
+    def make_project_done(self, project_id: int):
         project = self.auth.session.get(Project, project_id)
-        if project and project.owner == self.auth.user and project.doer is None:
+        if (
+            project
+            and project.owner == self.auth.user
+            and project.status.title == ProjectStatusEnum.assigned
+        ):
             try:
+                done_status = self.auth.session.exec(
+                    select(Status).where(Status.title == ProjectStatusEnum.done)
+                ).first()
+                project.status = done_status
+                self.auth.session.add(project)
+                self.auth.session.commit()
+                return JSONResponse(status_code=200, content={})
+            except IntegrityError:
+                raise permission_exception
+        else:
+            raise permission_exception
+
+    @authenticated_router.post("/project/assign", response_model=PickDoer)
+    def assign_project(self, project_id: int, doer_id: int):
+        project = self.auth.session.get(Project, project_id)
+        if (
+            project
+            and project.owner == self.auth.user
+            and project.status.title == ProjectStatusEnum.unassigned
+            and doer_id != self.auth.user.id
+        ):
+            try:
+                assigned_status = self.auth.session.exec(
+                    select(Status).where(Status.title == ProjectStatusEnum.assigned)
+                ).first()
                 project.doer_id = doer_id
+                project.status = assigned_status
                 self.auth.session.add(project)
                 self.auth.session.commit()
                 self.auth.session.refresh(project)
@@ -539,7 +914,7 @@ class AuthenticatedRouter:
         else:
             raise permission_exception
 
-    @authenticated_router.post("/comment", status_code=201)
+    @authenticated_router.post("/project/comment", status_code=201)
     def create_comment(self, comment_in: CommentIn):
         project = self.auth.session.get(Project, comment_in.project_id)
         if project is None:
@@ -588,6 +963,63 @@ class AuthenticatedRouter:
             self.auth.session.add(self.auth.user)
             self.auth.session.commit()
             return plan
+        else:
+            raise not_found_exception
+
+    @authenticated_router.get("/chat")
+    def get_messages_list(self):
+        query = f"""
+            SELECT m.*
+            FROM message m
+            WHERE m.created_at = (SELECT MAX(m2.created_at)
+                FROM message m2
+                WHERE (m2.from_user_id = m.from_user_id AND m2.to_user_id = m.to_user_id) OR
+                        (m2.from_user_id = m.to_user_id AND m2.to_user_id = m.from_user_id) 
+                ) AND m.from_user_id = {self.auth.user.id} OR m.to_user_id = {self.auth.user.id}
+            ORDER BY m.created_at DESC
+        """
+        result = self.auth.session.execute(query)
+        return result
+
+    @authenticated_router.websocket("/chat/ws")
+    async def chat_manger(self, websocket: WebSocket):
+        try:
+            while True:
+                await connection_manager.connect(self.auth.user.id, websocket)
+                message_block = await websocket.receive_json()
+                await connection_manager.send_personal_message(self.auth, message_block)
+        except WebSocketDisconnect:
+            connection_manager.disconnect(self.auth.user)
+
+    @authenticated_router.post("/user/picture")
+    async def upload_profile_picture(self, file: UploadFile):
+        if file.content_type not in ["image/jpeg", "image/png", "image/webp"]:
+            raise permission_exception
+        with open(
+            settings.BASE_DIR / settings.DATA_PATH / f"{self.auth.user.id}.profile.jpg",
+            "wb",
+        ) as f:
+            f.write(await file.read())
+        return JSONResponse(status_code=200, content={})
+
+    @authenticated_router.get(
+        "/user/picture",
+    )
+    def get_profile_pictures(self, user_id: int):
+        image_path = settings.BASE_DIR / settings.DATA_PATH / f"{user_id}.profile.jpg"
+        if os.path.exists(image_path):
+            return FileResponse(image_path)
+        else:
+            raise not_found_exception
+
+    @authenticated_router.delete("/user/picture", response_class=FileResponse)
+    def delete_profile_picture(self):
+        image_path = (
+            settings.BASE_DIR / settings.DATA_PATH / f"{self.auth.user.id}.profile.jpg"
+        )
+        if os.path.exists(image_path):
+            os.remove(image_path)
+            return JSONResponse(status_code=200, content={})
         else:
             raise not_found_exception
 
