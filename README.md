@@ -4,7 +4,7 @@
 ### run
 uvicorn api.main:app --reload
 
-##Used technologies
+## Used technologies
 * Fastapi
 * Uvicorn
 * Pydantic
@@ -16,7 +16,7 @@ uvicorn api.main:app --reload
 * JWT
 
 
-##Basic features
+## Basic features
 * User validation by email
 * Resetting password by email
 * Creating resume
@@ -27,4 +27,4 @@ uvicorn api.main:app --reload
 
 
 _Project uses single folder structure for simplicity._
-_Also it's not using async due to sqlmodel lack of good support at the time of writing the project except chat section :)_
+_Also it's not using async due to sqlmodel lack of good support at the time of writing the project._
