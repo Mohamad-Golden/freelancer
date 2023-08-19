@@ -383,3 +383,4 @@ class Message(SQLModel, table=True):
     )
     text: str
     created_at: datetime = Field(default_factory=datetime.now, nullable=False)
+    is_read: bool = False

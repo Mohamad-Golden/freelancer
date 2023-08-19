@@ -1,7 +1,8 @@
 from jose import JWTError, jwt
 from typing import Annotated, Union, List
 from datetime import datetime, timedelta
-from fastapi import Depends, Cookie, WebSocket
+from fastapi import Depends, Cookie
+from fastapi.websockets import WebSocket, WebSocketDisconnect
 from ..settings import settings
 
 from typing import Tuple
@@ -109,11 +110,11 @@ def update_model(origin_obj, update_obj):
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: dict[int, WebSocket] = {}
 
     async def connect(self, user_id: int, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections.append({user_id: websocket})
+        self.active_connections[user_id] = websocket
 
     def disconnect(self, user_id: int):
         del self.active_connections[user_id]
@@ -122,6 +123,7 @@ class ConnectionManager:
         text = message_block.get("text")
         to_user_id = message_block.get("to_user_id")
         if to_user_id and text:
+            to_user_id = int(to_user_id)
             receiver_socket = self.active_connections.get(to_user_id)
             if receiver_socket:
                 await receiver_socket.send_json(
@@ -137,5 +139,5 @@ class ConnectionManager:
                 )
                 auth.session.add(message_db)
                 auth.session.commit()
-            except (IntegrityError, DataError):
-                raise not_found_exception
+            except (IntegrityError, DataError, ValueError):
+                pass

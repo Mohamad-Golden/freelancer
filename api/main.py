@@ -13,7 +13,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from sqlmodel import SQLModel, Session
-from pathlib import Path
 from .settings import settings
 from .core.router import admin_router
 from .core.router import router

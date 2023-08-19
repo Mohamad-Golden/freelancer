@@ -2,7 +2,7 @@ from fastapi_utils.cbv import cbv
 from fastapi_utils.inferring_router import InferringRouter
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.websockets import WebSocket, WebSocketDisconnect
-from sqlmodel import select, Session, func
+from sqlmodel import select, Session, func, or_, and_, update
 from fastapi import Depends, Body, Query, UploadFile
 from pydantic import Field, EmailStr
 from typing import List, Optional
@@ -15,6 +15,7 @@ from ..settings import settings
 from .models import (
     UserCreate,
     UserOut,
+    Message,
     User,
     Follower,
     Status,
@@ -83,12 +84,13 @@ html = """
         <h1>WebSocket Chat</h1>
         <form action="" onsubmit="sendMessage(event)">
             <input type="text" id="messageText" autocomplete="off"/>
+            <input type="text" id="toUser"/> 
             <button>Send</button>
         </form>
         <ul id='messages'>
         </ul>
         <script>
-            var ws = new WebSocket("ws://localhost:8000/ws");
+            var ws = new WebSocket("ws://localhost:8000/api/chat/ws");
             ws.onmessage = function(event) {
                 var messages = document.getElementById('messages')
                 var message = document.createElement('li')
@@ -97,8 +99,9 @@ html = """
                 messages.appendChild(message)
             };
             function sendMessage(event) {
+                var user = document.getElementById('toUser')
                 var input = document.getElementById("messageText")
-                ws.send(input.value)
+                ws.send(JSON.stringify({text: input.value, to_user_id: user.value}))
                 input.value = ''
                 event.preventDefault()
             }
@@ -966,7 +969,7 @@ class AuthenticatedRouter:
         else:
             raise not_found_exception
 
-    @authenticated_router.get("/chat")
+    @authenticated_router.get("/chat/inbox", response_model=List[Message])
     def get_messages_list(self):
         query = f"""
             SELECT m.*
@@ -975,17 +978,46 @@ class AuthenticatedRouter:
                 FROM message m2
                 WHERE (m2.from_user_id = m.from_user_id AND m2.to_user_id = m.to_user_id) OR
                         (m2.from_user_id = m.to_user_id AND m2.to_user_id = m.from_user_id) 
-                ) AND m.from_user_id = {self.auth.user.id} OR m.to_user_id = {self.auth.user.id}
+                ) AND (m.from_user_id = {self.auth.user.id} OR m.to_user_id = {self.auth.user.id})
             ORDER BY m.created_at DESC
         """
-        result = self.auth.session.execute(query)
+        result = self.auth.session.exec(query).all()
+        return result
+
+    @authenticated_router.get("/chat", response_model=List[Message])
+    def get_user_message(self, user_id: int, page: int = 1, limit: int = 10):
+        self.auth.session.exec(
+            update(Message)
+            .where(Message.from_user_id == user_id, Message.to_user == self.auth.user)
+            .values(is_read=True),
+        )
+        self.auth.session.commit()
+        result = self.auth.session.exec(
+            select(Message)
+            .where(
+                or_(
+                    and_(
+                        Message.from_user == self.auth.user,
+                        Message.to_user_id == user_id,
+                    ),
+                    and_(
+                        Message.to_user == self.auth.user,
+                        Message.from_user_id == user_id,
+                    ),
+                )
+            )
+            .order_by(Message.created_at.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
+        ).all()
+        result.reverse()
         return result
 
     @authenticated_router.websocket("/chat/ws")
     async def chat_manger(self, websocket: WebSocket):
         try:
+            await connection_manager.connect(self.auth.user.id, websocket)
             while True:
-                await connection_manager.connect(self.auth.user.id, websocket)
                 message_block = await websocket.receive_json()
                 await connection_manager.send_personal_message(self.auth, message_block)
         except WebSocketDisconnect:
