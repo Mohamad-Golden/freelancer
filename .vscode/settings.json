@@ -1,5 +1,8 @@
 {
   "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": true
+  },
   "[python]": {
     "editor.formatOnType": true,
     "editor.defaultFormatter": "ms-python.black-formatter"
@@ -10,8 +13,10 @@
     "sqlmodel",
     "starlette",
     "templating",
+    "venv",
     "sqlalchemy",
     "uvicorn",
+    "asyncpg",
     "dotenv",
     "websockets"
   ]

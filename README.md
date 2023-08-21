@@ -1,10 +1,16 @@
 # Freelancer
 ## Simple version of a freelancing website
 
-### run
+### run backend standalone
+```
+cd backend
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 uvicorn api.main:app --reload
+```
 
-## Used technologies
+### Used technologies (backend)
 * Fastapi
 * Uvicorn
 * Pydantic
@@ -16,7 +22,7 @@ uvicorn api.main:app --reload
 * JWT
 
 
-## Basic features
+### Basic features
 * User validation by email
 * Resetting password by email
 * Creating resume
