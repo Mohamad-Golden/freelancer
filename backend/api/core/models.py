@@ -1,12 +1,19 @@
-from sqlmodel import SQLModel, Field, Relationship, Session
-from pydantic import EmailStr
-from pydantic import root_validator
-from typing import Optional, List
-from .types import RoleEnum
-
-from datetime import datetime, timedelta
-import string
 import secrets
+import string
+from datetime import datetime, timedelta
+from typing import List, Optional
+
+from pydantic import EmailStr, root_validator
+from sqlmodel import Field, Relationship, SQLModel
+
+from .types import RequestType
+
+
+class BaseModel(SQLModel):
+    updated_at: datetime | None = Field(
+        default_factory=datetime.utcnow, sa_column_kwargs={"onupdate": datetime.utcnow}
+    )
+    created_at: datetime | None = Field(default_factory=datetime.utcnow)
 
 
 class UserBase(SQLModel):
@@ -18,10 +25,11 @@ class UserLogin(UserBase):
 
 
 class UserCreate(UserLogin):
-    role: RoleEnum
+    # role: RoleEnum
+    role_id: int
 
 
-class UserTechnology(SQLModel, table=True):
+class UserTechnology(BaseModel, table=True):
     # Freelancer's skills
     technology_id: Optional[int] = Field(
         default=None, foreign_key="technology.id", primary_key=True
@@ -33,17 +41,26 @@ class UserTechnology(SQLModel, table=True):
     user: "User" = Relationship(back_populates="user_technologies")
 
 
+class RoleOut(SQLModel):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    title: str
+
+
 class UserShortOut(UserBase):
     id: Optional[int] = Field(default=None, primary_key=True)
+    name: Optional[str] = None
+    role: Optional["RoleOut"] = None
 
 
 class PickDoer(SQLModel):
     doer: UserShortOut
 
 
-class User(UserBase, table=True):
+class User(BaseModel, UserBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     description: Optional[str] = None
+    name: Optional[str] = None
+    age: Optional[int] = Field(None, gt=0)
     offer_left: int = Field(default=0, gt=-1)
     plan_id: Optional[int] = Field(default=None, foreign_key="plan.id")
     plan: Optional["Plan"] = Relationship()
@@ -51,9 +68,10 @@ class User(UserBase, table=True):
     hashed_password: str = Field(default=None, max_length=32)
     role_id: Optional[int] = Field(foreign_key="role.id")
     role: Optional["Role"] = Relationship()
-    created_at: datetime = Field(default_factory=datetime.now, nullable=False)
     offers: List["Offer"] = Relationship(back_populates="offerer")
     is_verified: bool = False
+    is_email_verified: bool = False
+    is_superuser: bool = False
     # projects: List["Project"] = Relationship(
     #     back_populates="owner",
     # )
@@ -62,6 +80,9 @@ class User(UserBase, table=True):
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}, back_populates="user"
     )
     verification_code: Optional["UserVerificationCode"] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}, back_populates="user"
+    )
+    request: Optional["Request"] = Relationship(
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}, back_populates="user"
     )
     # followers: Optional["Follower"] = Relationship(
@@ -77,10 +98,26 @@ class User(UserBase, table=True):
     # doing_projects: List["Project"] = Relationship(
     #     back_populates="doer",
     # )
-    # comments: List["Comment"] = Relationship(
-    #     back_populates="user_from",
-    #     sa_relationship_kwargs={"cascade": "all, delete-orphan"},
-    # )
+    experiences: List["Experience"] = Relationship(
+        back_populates="user",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    educations: List["Education"] = Relationship(
+        back_populates="user",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    comments: List["Comment"] = Relationship(
+        back_populates="from_user",
+        sa_relationship_kwargs={
+            "primaryjoin": "Comment.from_user_id==User.id",
+            "lazy": "joined",
+            "cascade": "all, delete-orphan",
+        },
+    )
+    sample_projects: List["SampleProject"] = Relationship(
+        back_populates="user",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
 
 
 class SampleProjectOut(SQLModel):
@@ -90,9 +127,9 @@ class SampleProjectOut(SQLModel):
     link: Optional[str] = None
 
 
-class SampleProject(SampleProjectOut, table=True):
+class SampleProject(BaseModel, SampleProjectOut, table=True):
     user_id: Optional[int] = Field(nullable=False, foreign_key="user.id")
-    user: User = Relationship()
+    user: User = Relationship(back_populates="sample_projects")
 
 
 class EducationOut(SQLModel):
@@ -114,9 +151,9 @@ class EducationOut(SQLModel):
             return values
 
 
-class Education(EducationOut, table=True):
+class Education(BaseModel, EducationOut, table=True):
     user_id: Optional[int] = Field(nullable=False, foreign_key="user.id")
-    user: User = Relationship()
+    user: User = Relationship(back_populates='educations')
 
 
 class CommentOut(SQLModel):
@@ -133,9 +170,8 @@ class CommentIn(SQLModel):
     message: str
 
 
-class Comment(SQLModel, table=True):
+class Comment(BaseModel, SQLModel, table=True):
     star: Optional[int] = Field(default=0, nullable=False, gt=-1, lt=6)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
     project_id: Optional[int] = Field(primary_key=True, foreign_key="project.id")
     project: "Project" = Relationship()
     from_user_id: Optional[int] = Field(primary_key=True, foreign_key="user.id")
@@ -169,9 +205,9 @@ class ExperienceOut(SQLModel):
             return values
 
 
-class Experience(ExperienceOut, table=True):
+class Experience(BaseModel, ExperienceOut, table=True):
     user_id: Optional[int] = Field(nullable=False, foreign_key="user.id")
-    user: User = Relationship()
+    user: User = Relationship(back_populates='experiences')
 
 
 class TechnologyCreate(SQLModel):
@@ -183,7 +219,7 @@ class TechnologyOut(TechnologyCreate):
     slug: Optional[str] = None
 
 
-class Technology(TechnologyCreate, table=True):
+class Technology(BaseModel, TechnologyCreate, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     project_technologies: List["ProjectTechnology"] = Relationship(
         back_populates="technology"
@@ -197,6 +233,9 @@ class Technology(TechnologyCreate, table=True):
 class UserOut(UserBase):
     id: int
     description: Optional[str] = None
+    name: Optional[str] = None
+    role: Optional[RoleOut] = None
+    age: Optional[int] = Field(None, gt=0)
     offer_left: int = Field(default=0, gt=-1)
     educations: List[EducationOut] = None
     experiences: List[ExperienceOut] = None
@@ -207,6 +246,8 @@ class UserOut(UserBase):
 
 
 class UserUpdate(SQLModel):
+    name: Optional[str] = None
+    age: Optional[int] = Field(None, gt=0)
     description: Optional[str] = None
     educations: List[EducationOut] = None
     experiences: List[ExperienceOut] = None
@@ -219,15 +260,17 @@ class PlanCreate(SQLModel):
     duration_day: Optional[int] = None
     offer_number: int
 
+
 class PlanChange(SQLModel):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str = Field(unique=True)
 
 
-class Plan(PlanChange, table=True):
+class Plan(BaseModel, PlanChange, table=True):
     users: List[User] = Relationship(back_populates="plan")
     duration_day: Optional[int] = None
     offer_number: int
+
 
 class PlanUpdate(SQLModel):
     id: int
@@ -236,9 +279,7 @@ class PlanUpdate(SQLModel):
     offer_number: Optional[int] = None
 
 
-class Role(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    title: str
+class Role(BaseModel, RoleOut, table=True):
     users: List[User] = Relationship(back_populates="role")
 
 
@@ -275,7 +316,6 @@ class ProjectBase(SQLModel):
     description: Optional[str] = None
     price_from: int
     price_to: int
-    created_at: datetime = Field(default_factory=datetime.utcnow)
     expire_at: datetime = Field(
         default_factory=lambda: datetime.utcnow() + timedelta(days=15)
     )
@@ -302,7 +342,7 @@ class ProjectOut(ProjectBase):
     status: Optional["StatusOut"] = None
 
 
-class Project(ProjectBase, table=True):
+class Project(BaseModel, ProjectBase, table=True):
     offers: List["Offer"] = Relationship(
         back_populates="project",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
@@ -322,13 +362,13 @@ class Project(ProjectBase, table=True):
     status: "Status" = Relationship(back_populates="projects")
 
 
-class Status(SQLModel, table=True):
+class Status(BaseModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str = Field(unique=True)
     projects: Project = Relationship(back_populates="status")
 
 
-class ProjectTechnology(SQLModel, table=True):
+class ProjectTechnology(BaseModel, table=True):
     technology_id: Optional[int] = Field(
         default=None, foreign_key="technology.id", primary_key=True
     )
@@ -339,7 +379,7 @@ class ProjectTechnology(SQLModel, table=True):
     project: Project = Relationship(back_populates="project_technologies")
 
 
-class UserVerificationCode(SQLModel, table=True):
+class UserVerificationCode(BaseModel, table=True):
     code: str = Field(
         default_factory=lambda: "".join(
             secrets.choice(string.digits) for _ in range(6)
@@ -353,7 +393,7 @@ class UserVerificationCode(SQLModel, table=True):
     )
 
 
-class ResetPasswordToken(SQLModel, table=True):
+class ResetPasswordToken(BaseModel, table=True):
     token: str = Field(default_factory=secrets.token_hex, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
     user: User = Relationship(back_populates="reset_token")
@@ -362,7 +402,7 @@ class ResetPasswordToken(SQLModel, table=True):
     )
 
 
-class Offer(SQLModel, table=True):
+class Offer(BaseModel, table=True):
     offerer_id: Optional[int] = Field(foreign_key="user.id", primary_key=True)
     offerer: User = Relationship()
     project_id: Optional[int] = Field(foreign_key="project.id", primary_key=True)
@@ -371,7 +411,7 @@ class Offer(SQLModel, table=True):
     duration_day: int = Field(gt=-1)
 
 
-class Follower(SQLModel, table=True):
+class Follower(BaseModel, table=True):
     follower_id: Optional[int] = Field(foreign_key="user.id", primary_key=True)
     follower: User = Relationship(
         sa_relationship_kwargs=dict(foreign_keys="[Follower.follower_id]"),
@@ -382,7 +422,7 @@ class Follower(SQLModel, table=True):
     )
 
 
-class Message(SQLModel, table=True):
+class Message(BaseModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     from_user_id: Optional[int] = Field(nullable=False, foreign_key="user.id")
     from_user: User = Relationship(
@@ -393,5 +433,12 @@ class Message(SQLModel, table=True):
         sa_relationship_kwargs=dict(foreign_keys="[Message.to_user_id]"),
     )
     text: str
-    created_at: datetime = Field(default_factory=datetime.now, nullable=False)
     is_read: bool = False
+
+
+class Request(BaseModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(nullable=False, foreign_key="user.id")
+    request_type: RequestType = RequestType.verification
+    user: User = Relationship(back_populates="request")
+    accepted: Optional[bool] = Field(None, nullable=True)

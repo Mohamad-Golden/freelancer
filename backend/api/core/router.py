@@ -11,6 +11,7 @@ from fastapi_utils.inferring_router import InferringRouter
 from pydantic import EmailStr
 from slugify import slugify
 from sqlalchemy.exc import DataError, IntegrityError
+from sqlalchemy.sql.operators import is_
 from sqlmodel import Session, and_, func, or_, select, update
 
 from ..settings import settings
@@ -35,8 +36,10 @@ from .models import (
     ProjectList,
     ProjectOut,
     ProjectTechnology,
+    Request,
     ResetPasswordToken,
     Role,
+    RoleOut,
     SampleProject,
     SampleProjectOut,
     Status,
@@ -59,7 +62,7 @@ from .responses import (
     not_found_exception,
     permission_exception,
 )
-from .types import PlanEnum, ProjectStatusEnum, SortDirEnum, SortEnum
+from .types import PlanEnum, ProjectStatusEnum, RoleEnum, SortDirEnum, SortEnum
 from .utils import (
     Auth,
     ConnectionManager,
@@ -132,7 +135,12 @@ class Router:
         plan = self.session.exec(
             select(Plan).where(Plan.title == PlanEnum.free)
         ).first()
-        role = self.session.exec(select(Role).where(Role.title == user_in.role)).first()
+        role = self.session.get(Role, user_in.role_id)
+        if role is None:
+            raise not_found_exception
+        if role.title == RoleEnum.admin:
+            raise permission_exception
+
         user = User.from_orm(
             user_in,
             update={
@@ -151,6 +159,7 @@ class Router:
             self.session.refresh(user)
             return user
         except IntegrityError:
+            self.session.rollback()
             raise conflict_exception
 
     @router.post(
@@ -181,13 +190,16 @@ class Router:
             )
         ).first()
         user_out = UserOut.from_orm(user)
+        user_out.technologies = []
+        for tech in user.user_technologies:
+            user_out.technologies.append(tech.technology)
         user_out.star = avg_star if avg_star else 0
         return user_out
 
     @router.post("/login")
     def login(self, user_in: UserLogin):
         user = validate_user(self.session, user_in.email, user_in.password)
-        if user.is_verified:
+        if user.is_email_verified:
             access_token = create_access_token({"sub": str(user.id)})
             response = JSONResponse(status_code=200, content={})
             response.set_cookie(
@@ -212,7 +224,7 @@ class Router:
         ).first()
         if database_code:
             user = self.session.get(User, user_id)
-            user.is_verified = True
+            user.is_email_verified = True
             self.session.delete(database_code)
             self.session.add(user)
             self.session.commit()
@@ -383,6 +395,24 @@ class Router:
 @cbv(authenticated_router)
 class AuthenticatedRouter:
     auth: Auth = Depends(authenticate_user)
+
+    @authenticated_router.get(
+        "/request/validation",
+    )
+    def request_validation(self):
+        request = self.auth.session.exec(
+            select(Request).where(
+                Request.user == self.auth.user,
+                is_(Request.accepted, None),
+                is_(Request.accepted, True),
+            )
+        ).first()
+        if request:
+            raise permission_exception
+        new_request = Request(user=self.auth.user)
+        self.auth.session.add(new_request)
+        self.auth.session.commit()
+        return JSONResponse(status_code=200, content={})
 
     @authenticated_router.delete(
         "/user",
@@ -1083,7 +1113,7 @@ class AuthenticatedRouter:
 
 
 @cbv(admin_router)
-class AuthenticatedRouter:
+class CriticallyAuthenticatedRouter:
     auth: Auth = Depends(authenticate_admin)
 
     @admin_router.post("/technology", response_model=TechnologyOut, status_code=201)
@@ -1149,5 +1179,93 @@ class AuthenticatedRouter:
             self.auth.session.add(plan)
             self.auth.session.commit()
             return plan
+        else:
+            raise not_found_exception
+
+    @admin_router.put("/admin/role", response_model=UserOut)
+    def change_user_role(self, user_id: int, role_id: int):
+        role = self.auth.session.get(Role, role_id)
+        if role:
+            user = self.auth.session.get(User, user_id)
+            if user is None:
+                raise not_found_exception
+            if self.auth.user.is_superuser is False:
+                if user.is_superuser or user.role.title == RoleEnum.admin:
+                    raise permission_exception
+            user.role = role
+            self.auth.session.commit()
+            self.auth.session.refresh(user)
+            return user
+        else:
+            raise not_found_exception
+
+    @admin_router.get(
+        "/admin/users",
+        response_model=List[UserShortOut],
+        response_model_exclude_none=True,
+    )
+    def list_all_users(self, offset: int = 1, limit: int = 10):
+        users = (
+            self.auth.session.exec(
+                select(User).offset((offset - 1) * limit).limit(limit)
+            )
+            .unique()
+            .all()
+        )
+        return users
+
+    @admin_router.delete("/admin/users", response_model=UserOut)
+    def delete_user(self, user_id: int):
+        user = self.auth.session.get(User, user_id)
+        if user:
+            if self.auth.user.is_superuser is False:
+                if user.is_superuser or user.role.title == RoleEnum.admin:
+                    raise permission_exception
+            self.auth.session.delete(user)
+            self.auth.session.commit()
+            return user
+        else:
+            raise not_found_exception
+
+    @admin_router.delete("/admin/project", response_model=ProjectOut)
+    def delete_project(self, project_id: int):
+        project = self.auth.session.get(Project, project_id)
+        if project:
+            self.auth.session.delete(project)
+            self.auth.session.commit()
+            self.auth.session.refresh(project)
+            return project
+        else:
+            raise not_found_exception
+
+    @admin_router.get("admin/requests")
+    def list_user_requests(self):
+        requests = self.auth.session.exec(select(Request)).all()
+        return requests
+
+    @admin_router.get("admin/validate")
+    def validate_user(self, request_id: int):
+        request = self.auth.session.get(Request, request_id)
+        if request:
+            if request.user.is_superuser:
+                raise permission_exception
+            request.accepted = True
+            request.user.is_verified = True
+            self.auth.session.add(request)
+            self.auth.session.commit()
+            return JSONResponse(status_code=200, content={})
+        else:
+            raise not_found_exception
+
+    @admin_router.get("admin/invalidate")
+    def invalidate_user(self, user_id: int):
+        user = self.auth.session.get(User, user_id)
+        if user:
+            if user.is_superuser:
+                raise permission_exception
+            user.is_verified = False
+            self.auth.session.add(user)
+            self.auth.session.commit()
+            return JSONResponse(status_code=200, content={})
         else:
             raise not_found_exception

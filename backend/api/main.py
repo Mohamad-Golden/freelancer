@@ -1,6 +1,7 @@
 import hashlib
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
@@ -38,6 +39,7 @@ def startup():
             plan=free,
             offer_left=free.offer_number,
             is_verified=True,
+            is_email_verified=True,
         )
         unassigned = Status(title="unassigned")
         assigned = Status(title="assigned")
@@ -84,13 +86,13 @@ def get_application():
             swagger_ui_parameters={"docExpansion": None},
         )
 
-    # _app.add_middleware(
-    #     CORSMiddleware,
-    #     allow_origins=[],
-    #     allow_credentials=True,
-    #     allow_methods=["*"],
-    #     allow_headers=["*"],
-    # )
+    _app.add_middleware(
+        CORSMiddleware,
+        allow_origins=['*'],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     # templates = Jinja2Templates(directory="templates/")
     # _app.mount("/static", StaticFiles(directory="templates/static"), name="static")
 

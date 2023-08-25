@@ -146,7 +146,7 @@ def sendmail(recipient: str, body: str, subject: str = "Freelancer"):
             server.starttls()
             server.ehlo()
             server.login(settings.MAIL_USERNAME, settings.MAIL_PASSWORD)
-            server.sendmail(settings.MAIL_USERNAME, recipient, message)
+            # server.sendmail(settings.MAIL_USERNAME, recipient, message)
 
     except:
         return

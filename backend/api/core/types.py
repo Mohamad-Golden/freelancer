@@ -11,8 +11,7 @@ class PlanEnum(str, Enum):
 class RoleEnum(str, Enum):
     freelancer = "freelancer"
     employer = "employer"
-
-    # admin = "admin"
+    admin = "admin"
 
 
 class GeneralRole(str, Enum):
@@ -35,3 +34,6 @@ class SortEnum(str, Enum):
 class SortDirEnum(str, Enum):
     ascending = "asc"
     descending = "desc"
+
+class RequestType(str, Enum):
+    verification = 'verification'

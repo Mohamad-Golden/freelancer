@@ -10,10 +10,34 @@
             "request": "launch",
             "module": "uvicorn",
             "args": [
-                "backend.api.main:app", "--reload"
+                "backend.api.main:app",
+                "--reload"
             ],
             "jinja": true,
             "justMyCode": true
+        },
+        {
+            "name": "Next.js: debug server-side",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "npm run dev --prefix frontend"
+        },
+        {
+            "name": "Next.js: debug client-side",
+            "type": "chrome",
+            "request": "launch",
+            "url": "http://localhost:3000"
+        },
+        {
+            "name": "Next.js: debug full stack",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "npm run dev --prefix frontend",
+            "serverReadyAction": {
+                "pattern": "started server on .+, url: (https?://.+)",
+                "uriFormat": "%s",
+                "action": "debugWithChrome"
+            }
         }
     ]
 }

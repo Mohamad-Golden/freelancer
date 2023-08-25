@@ -1,14 +1,17 @@
 {
-  "editor.formatOnSave": true,
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+  },
   "editor.codeActionsOnSave": {
     "source.organizeImports": true
   },
-  "[python]": {
-    "editor.formatOnType": true,
-    "editor.defaultFormatter": "ms-python.black-formatter"
-  },
+  "editor.formatOnSave": true,
+  "ruff.args": [
+    "--ignore=E501"
+  ],
   "cSpell.ignoreWords": [
     "fastapi",
+    "onupdate",
     "pydantic",
     "sqlmodel",
     "starlette",
@@ -19,5 +22,9 @@
     "asyncpg",
     "dotenv",
     "websockets"
-  ]
+  ],
+  "eslint.workingDirectories": ["./frontend"],
+  // "[javascript]": {
+  //   "editor.defaultFormatter": "esbenp.prettier-vscode"
+  // },
 }
