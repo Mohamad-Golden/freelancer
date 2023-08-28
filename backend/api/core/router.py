@@ -3,8 +3,11 @@ from datetime import datetime, timedelta
 from hashlib import md5
 from typing import List, Optional
 
-from fastapi import BackgroundTasks, Body, Depends, Query, UploadFile
+import aiofiles
+from fastapi import BackgroundTasks, Body, Depends, File, Query, UploadFile
+from fastapi import Request as ApiRequest
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 from fastapi_utils.cbv import cbv
 from fastapi_utils.inferring_router import InferringRouter
@@ -39,7 +42,6 @@ from .models import (
     Request,
     ResetPasswordToken,
     Role,
-    RoleOut,
     SampleProject,
     SampleProjectOut,
     Status,
@@ -48,9 +50,11 @@ from .models import (
     TechnologyOut,
     User,
     UserCreate,
+    UserFullOut,
     UserLogin,
     UserOut,
     UserShortOut,
+    UserShortWithId,
     UserTechnology,
     UserUpdate,
     UserVerificationCode,
@@ -62,7 +66,15 @@ from .responses import (
     not_found_exception,
     permission_exception,
 )
-from .types import PlanEnum, ProjectStatusEnum, RoleEnum, SortDirEnum, SortEnum
+from .types import (
+    PlanEnum,
+    ProjectStatusEnum,
+    RoleEnum,
+    SortDirEnum,
+    SortEnum,
+    SortRequestEnum,
+    UserSortEnum,
+)
 from .utils import (
     Auth,
     ConnectionManager,
@@ -78,43 +90,9 @@ from .utils import (
 router = InferringRouter()
 authenticated_router = InferringRouter()
 admin_router = InferringRouter()
-
 connection_manager = ConnectionManager()
-html = """
-<!DOCTYPE html>
-<html>
-    <head>
-        <title>Chat</title>
-    </head>
-    <body>
-        <h1>WebSocket Chat</h1>
-        <form action="" onsubmit="sendMessage(event)">
-            <input type="text" id="messageText" autocomplete="off"/>
-            <input type="text" id="toUser"/> 
-            <button>Send</button>
-        </form>
-        <ul id='messages'>
-        </ul>
-        <script>
-            var ws = new WebSocket("ws://localhost:8000/api/chat/ws");
-            ws.onmessage = function(event) {
-                var messages = document.getElementById('messages')
-                var message = document.createElement('li')
-                var content = document.createTextNode(event.data)
-                message.appendChild(content)
-                messages.appendChild(message)
-            };
-            function sendMessage(event) {
-                var user = document.getElementById('toUser')
-                var input = document.getElementById("messageText")
-                ws.send(JSON.stringify({text: input.value, to_user_id: user.value}))
-                input.value = ''
-                event.preventDefault()
-            }
-        </script>
-    </body>
-</html>
-"""
+
+templates = Jinja2Templates(directory="backend/templates/")
 
 
 @cbv(router)
@@ -122,8 +100,8 @@ class Router:
     session: Session = Depends(get_session)
 
     @router.get("/chat/test")
-    async def get(self):
-        return HTMLResponse(html)
+    async def get(self, request: ApiRequest):
+        return templates.TemplateResponse("chat.html", {"request": request})
 
     @router.post(
         "/user",
@@ -170,7 +148,8 @@ class Router:
             user = self.session.get(User, user_id)
             if user is None:
                 raise not_found_exception
-
+            if user.is_email_verified:
+                raise permission_exception
             verification_code = UserVerificationCode(user_id=user_id)
             background_task.add_task(sendmail, user.email, verification_code.code)
             self.session.add(verification_code)
@@ -292,7 +271,7 @@ class Router:
 
     @router.get("/role", response_model=List[Role])
     def list_roles(self):
-        return self.session.exec(select(Role)).all()
+        return self.session.exec(select(Role).where(Role.title != RoleEnum.admin)).all()
 
     @router.get("/plan", response_model=List[Plan])
     def list_plans(self):
@@ -397,17 +376,37 @@ class AuthenticatedRouter:
     auth: Auth = Depends(authenticate_user)
 
     @authenticated_router.get(
+        "/user/detail", response_model=UserOut, response_model_exclude_none=True
+    )
+    def get_user_detail(self):
+        avg_star = self.auth.session.exec(
+            select(func.avg(Comment.star).label("average")).where(
+                Comment.to_user_id == self.auth.user.id
+            )
+        ).first()
+        user_out = UserOut.from_orm(self.auth.user)
+        user_out.technologies = []
+        for tech in self.auth.user.user_technologies:
+            user_out.technologies.append(tech.technology)
+        user_out.star = avg_star if avg_star else 0
+        return user_out
+
+    @authenticated_router.get(
         "/request/validation",
     )
     def request_validation(self):
         request = self.auth.session.exec(
-            select(Request).where(
+            select(Request)
+            .where(
                 Request.user == self.auth.user,
-                is_(Request.accepted, None),
-                is_(Request.accepted, True),
+                or_(is_(Request.accepted, None), is_(Request.accepted, True)),
             )
+            .order_by(Request.created_at.desc())
         ).first()
-        if request:
+        if request and (
+            request.accepted is None
+            or (request.accepted is True and self.auth.user.is_verified is True)
+        ):
             raise permission_exception
         new_request = Request(user=self.auth.user)
         self.auth.session.add(new_request)
@@ -643,7 +642,7 @@ class AuthenticatedRouter:
             where_clause += [
                 Project.id == ProjectTechnology.project_id,
                 Technology.id == ProjectTechnology.technology_id,
-                Technology.slug.in_(techs),
+                Technology.id.in_(map(lambda t: t.technology_id, techs)),
             ]
             select_clause += [ProjectTechnology, Technology]
 
@@ -755,7 +754,7 @@ class AuthenticatedRouter:
             select(Follower, User).where(
                 Follower.following_id == User.id, Follower.follower == self.auth.user
             )
-        )
+        ).unique()
         followings = []
         for _, user in result:
             followings.append(user)
@@ -771,7 +770,7 @@ class AuthenticatedRouter:
             select(Follower, User).where(
                 Follower.follower_id == User.id, Follower.following == self.auth.user
             )
-        )
+        ).unique()
         followings = []
         for _, user in result:
             followings.append(user)
@@ -827,6 +826,8 @@ class AuthenticatedRouter:
                 new_exp = Experience.from_orm(exp_in)
                 new_exp.user = self.auth.user
                 self.auth.session.add(new_exp)
+                self.auth.session.commit()
+                self.auth.session.refresh(new_exp)
                 experiences_list.append(ExperienceOut.from_orm(new_exp))
 
             educations_in = educations_in_list.copy()
@@ -847,6 +848,8 @@ class AuthenticatedRouter:
                 new_edu = Education.from_orm(edu_in)
                 new_edu.user = self.auth.user
                 self.auth.session.add(new_edu)
+                self.auth.session.commit()
+                self.auth.session.refresh(new_edu)
                 educations_list.append(EducationOut.from_orm(new_edu))
 
             sample_projects_in = sample_projects_in_list.copy()
@@ -869,6 +872,8 @@ class AuthenticatedRouter:
                 new_sample = SampleProject.from_orm(sample_in)
                 new_sample.user = self.auth.user
                 self.auth.session.add(new_sample)
+                self.auth.session.commit()
+                self.auth.session.refresh(new_sample)
                 sample_projects_list.append(SampleProjectOut.from_orm(new_sample))
 
             technologies_id = technologies_in_list.copy()
@@ -886,7 +891,18 @@ class AuthenticatedRouter:
                 new_user_tech = UserTechnology(technology=tech, user=self.auth.user)
                 self.auth.session.add(new_user_tech)
                 technologies_list.append(TechnologyOut.from_orm(tech))
+
+            for key, value in user_in.dict(exclude_unset=True).items():
+                if key not in [
+                    "experiences",
+                    "educations",
+                    "sample_projects",
+                    "technologies_id",
+                ]:
+                    setattr(self.auth.user, key, value)
+
             self.auth.session.commit()
+            self.auth.session.refresh(self.auth.user)
         except IntegrityError:
             raise invalid_data_exception
 
@@ -950,7 +966,9 @@ class AuthenticatedRouter:
             raise permission_exception
 
     @authenticated_router.post("/project/assign", response_model=PickDoer)
-    def assign_project(self, project_id: int, doer_id: int):
+    def assign_project(
+        self, project_id: int, doer_id: int, duration_day: int = Query(gt=0)
+    ):
         project = self.auth.session.get(Project, project_id)
         if (
             project
@@ -958,12 +976,16 @@ class AuthenticatedRouter:
             and project.status.title == ProjectStatusEnum.unassigned
             and doer_id != self.auth.user.id
         ):
+            if doer_id not in map(lambda p: p.offerer_id, project.offers):
+                raise permission_exception
             try:
                 assigned_status = self.auth.session.exec(
                     select(Status).where(Status.title == ProjectStatusEnum.assigned)
                 ).first()
                 project.doer_id = doer_id
                 project.status = assigned_status
+                project.started_at = datetime.utcnow()
+                project.deadline_until = datetime.utcnow() + timedelta(duration_day)
                 self.auth.session.add(project)
                 self.auth.session.commit()
                 self.auth.session.refresh(project)
@@ -982,8 +1004,10 @@ class AuthenticatedRouter:
         if to_user is None:
             raise not_found_exception
         if (
-            self.auth.user == project.doer or self.auth.user == project.owner
-        ) and self.auth.user != to_user:
+            (self.auth.user == project.doer or self.auth.user == project.owner)
+            and self.auth.user != to_user
+            and project.status.title == ProjectStatusEnum.done
+        ):
             try:
                 new_comment = Comment.from_orm(comment_in)
                 new_comment.from_user = self.auth.user
@@ -1080,20 +1104,18 @@ class AuthenticatedRouter:
             connection_manager.disconnect(self.auth.user)
 
     @authenticated_router.post("/user/picture")
-    async def upload_profile_picture(self, file: UploadFile):
+    async def upload_profile_picture(self, file: UploadFile = File(...)):
         if file.content_type not in ["image/jpeg", "image/png", "image/webp"]:
             raise permission_exception
-        with open(
+        async with aiofiles.open(
             settings.BASE_DIR / settings.DATA_PATH / f"{self.auth.user.id}.profile.jpg",
             "wb",
         ) as f:
-            f.write(await file.read())
+            await f.write(await file.read())
         return JSONResponse(status_code=200, content={})
 
-    @authenticated_router.get(
-        "/user/picture",
-    )
-    def get_profile_pictures(self, user_id: int):
+    @authenticated_router.get("/user/pic/")
+    def get_profile_picture(self, user_id: int):
         image_path = settings.BASE_DIR / settings.DATA_PATH / f"{user_id}.profile.jpg"
         if os.path.exists(image_path):
             return FileResponse(image_path)
@@ -1182,8 +1204,9 @@ class CriticallyAuthenticatedRouter:
         else:
             raise not_found_exception
 
-    @admin_router.put("/admin/role", response_model=UserOut)
+    @admin_router.put("/role", response_model=UserOut)
     def change_user_role(self, user_id: int, role_id: int):
+        # changing user role to admin sets is_verified to True
         role = self.auth.session.get(Role, role_id)
         if role:
             user = self.auth.session.get(User, user_id)
@@ -1193,6 +1216,9 @@ class CriticallyAuthenticatedRouter:
                 if user.is_superuser or user.role.title == RoleEnum.admin:
                     raise permission_exception
             user.role = role
+            if role.title == RoleEnum.admin:
+                user.is_verified = True
+
             self.auth.session.commit()
             self.auth.session.refresh(user)
             return user
@@ -1200,21 +1226,30 @@ class CriticallyAuthenticatedRouter:
             raise not_found_exception
 
     @admin_router.get(
-        "/admin/users",
-        response_model=List[UserShortOut],
+        "/users",
+        response_model=List[UserShortWithId],
         response_model_exclude_none=True,
     )
-    def list_all_users(self, offset: int = 1, limit: int = 10):
+    def list_all_users(
+        self,
+        sort: UserSortEnum = UserSortEnum.date,
+        sort_dir: SortDirEnum = SortDirEnum.ascending,
+        offset: int = 1,
+        limit: int = 10,
+    ):
         users = (
             self.auth.session.exec(
-                select(User).offset((offset - 1) * limit).limit(limit)
+                select(User)
+                .offset((offset - 1) * limit)
+                .limit(limit)
+                .order_by(getattr(getattr(User, sort.value), sort_dir.value)())
             )
             .unique()
             .all()
         )
         return users
 
-    @admin_router.delete("/admin/users", response_model=UserOut)
+    @admin_router.delete("/users", response_model=UserOut)
     def delete_user(self, user_id: int):
         user = self.auth.session.get(User, user_id)
         if user:
@@ -1227,7 +1262,7 @@ class CriticallyAuthenticatedRouter:
         else:
             raise not_found_exception
 
-    @admin_router.delete("/admin/project", response_model=ProjectOut)
+    @admin_router.delete("/project", response_model=ProjectOut)
     def delete_project(self, project_id: int):
         project = self.auth.session.get(Project, project_id)
         if project:
@@ -1238,26 +1273,39 @@ class CriticallyAuthenticatedRouter:
         else:
             raise not_found_exception
 
-    @admin_router.get("admin/requests")
-    def list_user_requests(self):
-        requests = self.auth.session.exec(select(Request)).all()
+    @admin_router.get("/requests")
+    def list_user_requests(
+        self,
+        sort: SortRequestEnum = SortRequestEnum.date,
+        sort_dir: SortDirEnum = SortDirEnum.descending,
+        offset: int = 1,
+        limit: int = 10,
+    ):
+        requests = self.auth.session.exec(
+            select(Request)
+            .order_by(getattr(getattr(Request, sort.value), sort_dir.value)())
+            .offset((offset - 1) * limit)
+            .limit(limit)
+        ).all()
         return requests
 
-    @admin_router.get("admin/validate")
-    def validate_user(self, request_id: int):
+    @admin_router.get("/respond")
+    def respond_to_request(self, request_id: int, accept: bool):
         request = self.auth.session.get(Request, request_id)
         if request:
-            if request.user.is_superuser:
+            if request.accepted is not None:
                 raise permission_exception
-            request.accepted = True
-            request.user.is_verified = True
+            request.accepted = accept
+            if accept:
+                request.user.is_verified = True
+            request.responded_at = datetime.utcnow()
             self.auth.session.add(request)
             self.auth.session.commit()
             return JSONResponse(status_code=200, content={})
         else:
             raise not_found_exception
 
-    @admin_router.get("admin/invalidate")
+    @admin_router.get("/users/invalidate")
     def invalidate_user(self, user_id: int):
         user = self.auth.session.get(User, user_id)
         if user:
@@ -1269,3 +1317,27 @@ class CriticallyAuthenticatedRouter:
             return JSONResponse(status_code=200, content={})
         else:
             raise not_found_exception
+
+    @admin_router.get("/users/validate")
+    def validate_user(self, user_id: int):
+        user = self.auth.session.get(User, user_id)
+        if user:
+            if user.is_superuser:
+                raise permission_exception
+            user.is_verified = True
+            self.auth.session.add(user)
+            self.auth.session.commit()
+            return JSONResponse(status_code=200, content={})
+        else:
+            raise not_found_exception
+
+    @admin_router.get("/role", response_model=List[Role])
+    def list_all_roles(self):
+        return self.auth.session.exec(select(Role)).all()
+
+    @admin_router.get("/user/detail", response_model=UserFullOut)
+    def get_user_detail(self, user_id: int):
+        user = self.auth.session.get(User, user_id)
+        if user is None:
+            raise not_found_exception
+        return user

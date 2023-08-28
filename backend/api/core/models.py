@@ -51,6 +51,9 @@ class UserShortOut(UserBase):
     name: Optional[str] = None
     role: Optional["RoleOut"] = None
 
+class UserShortWithId(UserShortOut):
+    id_number: Optional[str] = None
+    is_verified: bool
 
 class PickDoer(SQLModel):
     doer: UserShortOut
@@ -60,6 +63,7 @@ class User(BaseModel, UserBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     description: Optional[str] = None
     name: Optional[str] = None
+    id_number: Optional[str] = Field(max_length=10, min_length=10)
     age: Optional[int] = Field(None, gt=0)
     offer_left: int = Field(default=0, gt=-1)
     plan_id: Optional[int] = Field(default=None, foreign_key="plan.id")
@@ -109,7 +113,7 @@ class User(BaseModel, UserBase, table=True):
     comments: List["Comment"] = Relationship(
         back_populates="from_user",
         sa_relationship_kwargs={
-            "primaryjoin": "Comment.from_user_id==User.id",
+            "primaryjoin": "Comment.to_user_id==User.id",
             "lazy": "joined",
             "cascade": "all, delete-orphan",
         },
@@ -160,6 +164,7 @@ class CommentOut(SQLModel):
     star: Optional[int] = Field(default=0, gt=-1, lt=6)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     from_user: UserShortOut
+    project_id: int
     message: str
 
 
@@ -244,10 +249,15 @@ class UserOut(UserBase):
     technologies: List[TechnologyOut] = None
     star: Optional[int] = Field(default=0, nullable=False, gt=-1, lt=6)
 
+class UserFullOut(UserOut):
+    id_number: Optional[str] = None
+    is_verified: bool
+
 
 class UserUpdate(SQLModel):
     name: Optional[str] = None
     age: Optional[int] = Field(None, gt=0)
+    id_number: Optional[str] = Field(max_length=10, min_length=10)
     description: Optional[str] = None
     educations: List[EducationOut] = None
     experiences: List[ExperienceOut] = None
@@ -307,7 +317,7 @@ class OfferCreate(SQLModel):
 class OfferOut(SQLModel):
     offer_price: int
     duration_day: int = Field(gt=-1)
-    offerer: UserOut
+    offerer: UserShortOut
 
 
 class ProjectBase(SQLModel):
@@ -321,7 +331,7 @@ class ProjectBase(SQLModel):
     )
     finished_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
-    deadline_until: Optional[datetime] = None
+    deadline_at: Optional[datetime] = None
 
 
 class StatusOut(SQLModel):
@@ -386,7 +396,7 @@ class UserVerificationCode(BaseModel, table=True):
         ),
         primary_key=True,
     )
-    user_id: Optional[int] = Field(foreign_key="user.id", nullable=False)
+    user_id: Optional[int] = Field(unique=True, foreign_key="user.id", nullable=False)
     user: Optional[User] = Relationship(back_populates="verification_code")
     expire_at: datetime = Field(
         default_factory=lambda: datetime.utcnow() + timedelta(minutes=5), nullable=False
@@ -395,7 +405,7 @@ class UserVerificationCode(BaseModel, table=True):
 
 class ResetPasswordToken(BaseModel, table=True):
     token: str = Field(default_factory=secrets.token_hex, primary_key=True)
-    user_id: int = Field(foreign_key="user.id")
+    user_id: int = Field(unique=True, foreign_key="user.id")
     user: User = Relationship(back_populates="reset_token")
     expire_at: datetime = Field(
         default_factory=lambda: datetime.utcnow() + timedelta(minutes=5), nullable=False
@@ -442,3 +452,4 @@ class Request(BaseModel, table=True):
     request_type: RequestType = RequestType.verification
     user: User = Relationship(back_populates="request")
     accepted: Optional[bool] = Field(None, nullable=True)
+    responded_at: datetime | None = Field(None)

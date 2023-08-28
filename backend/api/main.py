@@ -93,8 +93,7 @@ def get_application():
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    # templates = Jinja2Templates(directory="templates/")
-    # _app.mount("/static", StaticFiles(directory="templates/static"), name="static")
+    _app.mount("/static", StaticFiles(directory="backend/templates/static"), name="static")
 
     try:
         _app.mount(
@@ -106,7 +105,7 @@ def get_application():
         pass
     apiRouter.include_router(router, tags=["Unauthenticated"])
     apiRouter.include_router(authenticated_router, tags=["Authenticated"])
-    apiRouter.include_router(admin_router, tags=["Admin"])
+    apiRouter.include_router(admin_router, tags=["Admin"], prefix='/admin')
     _app.include_router(apiRouter)
 
     return _app

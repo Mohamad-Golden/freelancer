@@ -30,6 +30,12 @@ class SortEnum(str, Enum):
     date = "created_at"
     price = "price_to"
 
+class SortRequestEnum(str, Enum):
+    date = 'created_at'
+    response = 'responded_at'
+
+class UserSortEnum(str, Enum):
+    date = 'created_at'
 
 class SortDirEnum(str, Enum):
     ascending = "asc"
